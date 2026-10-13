@@ -58,14 +58,68 @@ public final class ImageUploader {
         return dir;
     }
 
-    /** System pictures folder ({@code ~/Pictures}); never created, may be missing. */
+    /** System pictures folder; never created, may be missing. */
     public static File getPicturesFolder() {
-        return new File(System.getProperty("user.home"), "Pictures");
+        return resolveUserDir("XDG_PICTURES_DIR", "Pictures");
     }
 
-    /** System downloads folder ({@code ~/Downloads}); never created, may be missing. */
+    /** System downloads folder; never created, may be missing. */
     public static File getDownloadsFolder() {
-        return new File(System.getProperty("user.home"), "Downloads");
+        return resolveUserDir("XDG_DOWNLOAD_DIR", "Downloads");
+    }
+
+    /**
+     * Resolves an OS user directory (pictures, downloads, ...).
+     *
+     * <p>On Linux the XDG config ({@code ~/.config/user-dirs.dirs}) wins, so
+     * localized names (e.g. German {@code ~/Bilder}, French {@code ~/Images})
+     * and custom locations just work. Everywhere else (Windows, macOS, or a
+     * missing/disabled XDG entry) it falls back to {@code ~/&lt;name&gt;},
+     * which matches the Windows/macOS defaults.</p>
+     */
+    private static File resolveUserDir(String xdgKey, String fallbackName) {
+        String home = System.getProperty("user.home");
+        String configured = readUserDirsEntry(new File(home, ".config/user-dirs.dirs"), xdgKey);
+        if (configured != null) {
+            if (configured.equals("$HOME")) {
+                return new File(home);
+            }
+            if (configured.startsWith("$HOME/")) {
+                return new File(home, configured.substring("$HOME/".length()));
+            }
+            File absolute = new File(configured);
+            if (absolute.isAbsolute()) {
+                return absolute;
+            }
+        }
+        return new File(home, fallbackName);
+    }
+
+    /** Reads one {@code KEY="value"} entry from an XDG user-dirs file, or null. */
+    private static String readUserDirsEntry(File configFile, String key) {
+        if (!configFile.isFile()) {
+            return null;
+        }
+        try (java.io.BufferedReader reader = java.nio.file.Files.newBufferedReader(
+                configFile.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#") || !line.startsWith(key + "=")) {
+                    continue;
+                }
+                String value = line.substring(key.length() + 1).trim();
+                if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+                    value = value.substring(1, value.length() - 1);
+                }
+                if (!value.isEmpty()) {
+                    return value;
+                }
+            }
+        } catch (IOException | SecurityException e) {
+            return null;
+        }
+        return null;
     }
 
     public static List<File> listImages(File folder) {

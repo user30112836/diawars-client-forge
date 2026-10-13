@@ -27,7 +27,8 @@ Downloads. Die Systemordner folgen der OS-Konfiguration (XDG
 `/image upload`. Die Mod skaliert das Bild auf 128x128 und sendet es
 stückweise als `diawars:image`-Paket an den Server. Vor dem Senden
 wählst du im Zuschneide-Menü den quadratischen Ausschnitt (ziehen zum
-Verschieben, Mausrad für die Größe). Die Antwort kommt im
+Verschieben, Mausrad oder −/+ für die Größe). Die Vorschau zeigt dabei
+immer das Bild in Originalqualität. Die Antwort kommt im
 Chat; mit `/image get <datei>` oder über das Bilder-Menü erhältst du
 die Karte.
 

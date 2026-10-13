@@ -34,11 +34,8 @@ public class ImageCropScreen extends Screen {
     private final String uploadName;
 
     private DynamicTexture previewTexture;
-    private BufferedImage sourceImage;
     private int imageWidth;
     private int imageHeight;
-    private int texWidth;
-    private int texHeight;
     private String loadError;
 
     private int selX;
@@ -49,6 +46,8 @@ public class ImageCropScreen extends Screen {
     private double grabDY;
 
     private Button confirmButton;
+    private Button minusButton;
+    private Button plusButton;
     private StringWidget infoLine;
     private String lastInfo = "";
 
@@ -60,36 +59,44 @@ public class ImageCropScreen extends Screen {
 
     @Override
     protected void init() {
-        if (this.sourceImage == null && this.loadError == null) {
+        if (this.previewTexture == null && this.loadError == null) {
             this.loadPreview();
         }
         String savedInfo = this.lastInfo;
         this.clearWidgets();
 
-        this.infoLine = new StringWidget(20, this.height - 72, this.width - 40, 12,
+        this.infoLine = new StringWidget(20, this.height - 88, this.width - 40, 12,
                 Component.literal(savedInfo), this.font);
         this.addRenderableWidget(this.infoLine);
+        this.addRenderableWidget(new StringWidget(20, this.height - 74, this.width - 40, 12,
+                Component.literal("Ziehen: Auswahl verschieben · Mausrad / − / +: Größe ändern"), this.font));
 
+        int smallWidth = 44;
         int buttonWidth = 110;
         int gap = 8;
-        int rowWidth = buttonWidth * 2 + gap;
+        int rowWidth = smallWidth * 2 + buttonWidth * 2 + gap * 3;
         int buttonX = (this.width - rowWidth) / 2;
         int buttonY = this.height - 30;
+        this.minusButton = Button.builder(Component.literal("−"),
+                button -> this.resizeBy(-1)).bounds(buttonX, buttonY, smallWidth, 20).build();
+        this.addRenderableWidget(this.minusButton);
+        this.plusButton = Button.builder(Component.literal("+"),
+                button -> this.resizeBy(1)).bounds(buttonX + smallWidth + gap, buttonY, smallWidth, 20).build();
+        this.addRenderableWidget(this.plusButton);
         this.addRenderableWidget(Button.builder(Component.literal("Zurück"),
                 button -> this.minecraft.setScreenAndShow(new ImageUploadScreen()))
-                .bounds(buttonX, buttonY, buttonWidth, 20).build());
+                .bounds(buttonX + (smallWidth + gap) * 2, buttonY, buttonWidth, 20).build());
         this.confirmButton = Button.builder(Component.literal("Hochladen"),
                 button -> this.onConfirm())
-                .bounds(buttonX + buttonWidth + gap, buttonY, buttonWidth, 20).build();
+                .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, buttonWidth, 20).build();
         this.addRenderableWidget(this.confirmButton);
-
-        this.refreshPreviewTexture();
     }
 
     private void loadPreview() {
         // Decode once via ImageIO (same decoder as the upload): supports
-        // PNG/JPG/GIF/BMP. The preview texture is built from this image in
-        // refreshPreviewTexture (see below).
+        // PNG/JPG/GIF/BMP. The texture keeps the full source resolution and
+        // the GPU scales it when drawing (see extractRenderState), so the
+        // preview always shows the original quality.
         BufferedImage decoded;
         try {
             decoded = ImageIO.read(this.sourceFile);
@@ -100,9 +107,36 @@ public class ImageCropScreen extends Screen {
             this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
             return;
         }
-        this.sourceImage = decoded;
-        this.imageWidth = decoded.getWidth();
-        this.imageHeight = decoded.getHeight();
+        NativeImage image;
+        try {
+            // Normalize to RGB first (same as the upload path): exotic color
+            // models (e.g. CMYK) and transparency would break PNG encoding.
+            BufferedImage rgb = new BufferedImage(decoded.getWidth(), decoded.getHeight(), BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D g = rgb.createGraphics();
+            try {
+                g.drawImage(decoded, 0, 0, null);
+            } finally {
+                g.dispose();
+            }
+            ByteArrayOutputStream png = new ByteArrayOutputStream();
+            if (!ImageIO.write(rgb, "png", png)) {
+                throw new IOException("encode failed");
+            }
+            image = NativeImage.read(new ByteArrayInputStream(png.toByteArray()));
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            this.loadError = "Vorschau konnte nicht erstellt werden (Bild zu groß?).";
+            return;
+        }
+        this.imageWidth = image.getWidth();
+        this.imageHeight = image.getHeight();
+        if (this.imageWidth < 1 || this.imageHeight < 1) {
+            image.close();
+            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
+            return;
+        }
+        this.minecraft.getTextureManager().release(PREVIEW_ID);
+        this.previewTexture = new DynamicTexture(() -> "diawars crop preview", image);
+        this.minecraft.getTextureManager().register(PREVIEW_ID, this.previewTexture);
 
         int size = Math.min(this.imageWidth, this.imageHeight);
         this.selSize = size;
@@ -110,54 +144,9 @@ public class ImageCropScreen extends Screen {
         this.selY = (this.imageHeight - size) / 2;
     }
 
-    /**
-     * (Re)builds the preview texture at exactly the currently drawn quad
-     * size. The blit below samples the texture 1:1, so the texture must match
-     * the quad — scaling on the GPU via mismatched blit sizes does not work.
-     */
-    private void refreshPreviewTexture() {
-        if (this.sourceImage == null) {
-            return;
-        }
-        int drawW = this.previewDrawW();
-        int drawH = this.previewDrawH();
-        if (this.previewTexture != null && drawW == this.texWidth && drawH == this.texHeight) {
-            return;
-        }
-        if (this.previewTexture != null) {
-            this.previewTexture.close();
-            this.minecraft.getTextureManager().release(PREVIEW_ID);
-            this.previewTexture = null;
-        }
-        try {
-            BufferedImage scaled = new BufferedImage(drawW, drawH, BufferedImage.TYPE_INT_RGB);
-            java.awt.Graphics2D g = scaled.createGraphics();
-            try {
-                g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
-                        java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                g.drawImage(this.sourceImage, 0, 0, drawW, drawH, null);
-            } finally {
-                g.dispose();
-            }
-            ByteArrayOutputStream png = new ByteArrayOutputStream();
-            if (!ImageIO.write(scaled, "png", png)) {
-                throw new IOException("encode failed");
-            }
-            NativeImage image = NativeImage.read(new ByteArrayInputStream(png.toByteArray()));
-            this.minecraft.getTextureManager().release(PREVIEW_ID);
-            this.previewTexture = new DynamicTexture(() -> "diawars crop preview", image);
-            this.minecraft.getTextureManager().register(PREVIEW_ID, this.previewTexture);
-            this.texWidth = drawW;
-            this.texHeight = drawH;
-        } catch (IOException | RuntimeException | OutOfMemoryError e) {
-            this.loadError = "Vorschau konnte nicht erstellt werden.";
-        }
-    }
-
     @Override
     public void removed() {
         super.removed();
-        this.sourceImage = null;
         if (this.previewTexture != null) {
             // DynamicTexture.close also frees its pixels.
             this.previewTexture.close();
@@ -168,8 +157,11 @@ public class ImageCropScreen extends Screen {
 
     @Override
     public void tick() {
-        this.confirmButton.active = this.previewTexture != null;
-        if (this.previewTexture != null) {
+        boolean ready = this.previewTexture != null;
+        this.confirmButton.active = ready;
+        this.minusButton.active = ready;
+        this.plusButton.active = ready;
+        if (ready) {
             String info = "\"" + this.uploadName + "\" · Auswahl "
                     + this.selSize + "x" + this.selSize + " → 128x128";
             if (!info.equals(this.lastInfo)) {
@@ -197,11 +189,12 @@ public class ImageCropScreen extends Screen {
         int drawW = this.previewDrawW();
         int drawH = this.previewDrawH();
         int drawX = (this.width - drawW) / 2;
-        int drawY = 30 + (((this.height - 88) - 30) - drawH) / 2;
+        int drawY = 30 + (((this.height - 96) - 30) - drawH) / 2;
 
-        // 1:1 blit: the texture is built at exactly this quad size.
+        // Full texture scaled into the quad: sample the whole image.
         extractor.blit(RenderPipelines.GUI_TEXTURED, PREVIEW_ID,
-                drawX, drawY, 0.0F, 0.0F, drawW, drawH, drawW, drawH);
+                drawX, drawY, 0.0F, 0.0F, drawW, drawH,
+                this.imageWidth, this.imageHeight, this.imageWidth, this.imageHeight);
 
         double scale = this.previewScale();
 
@@ -260,14 +253,22 @@ public class ImageCropScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (this.previewTexture != null && this.inPreview(mouseX, mouseY) && scrollY != 0.0) {
-            int step = Math.max(8, this.selSize / 8);
-            int maxSize = Math.min(this.imageWidth, this.imageHeight);
-            this.selSize = clamp(this.selSize + (scrollY > 0 ? step : -step), MIN_SIZE, maxSize);
-            this.selX = clamp(this.selX, 0, this.imageWidth - this.selSize);
-            this.selY = clamp(this.selY, 0, this.imageHeight - this.selSize);
+            this.resizeBy(scrollY > 0 ? 1 : -1);
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+    }
+
+    /** Grows (dir > 0) or shrinks the selection square. */
+    private void resizeBy(int dir) {
+        if (this.previewTexture == null) {
+            return;
+        }
+        int step = Math.max(8, this.selSize / 8);
+        int maxSize = Math.min(this.imageWidth, this.imageHeight);
+        this.selSize = clamp(this.selSize + dir * step, MIN_SIZE, maxSize);
+        this.selX = clamp(this.selX, 0, this.imageWidth - this.selSize);
+        this.selY = clamp(this.selY, 0, this.imageHeight - this.selSize);
     }
 
     private void onConfirm() {
@@ -286,7 +287,7 @@ public class ImageCropScreen extends Screen {
 
     private double previewScale() {
         int availW = this.width - 40;
-        int availH = (this.height - 88) - 30;
+        int availH = (this.height - 96) - 30;
         return Math.min((double) availW / this.imageWidth, (double) availH / this.imageHeight);
     }
 
@@ -303,7 +304,7 @@ public class ImageCropScreen extends Screen {
     }
 
     private int previewY() {
-        return 30 + (((this.height - 88) - 30) - this.previewDrawH()) / 2;
+        return 30 + (((this.height - 96) - 30) - this.previewDrawH()) / 2;
     }
 
     private boolean inPreview(double mouseX, double mouseY) {

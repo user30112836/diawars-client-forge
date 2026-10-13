@@ -25,6 +25,8 @@ Minecraft-Verzeichnis oder wähle über das Menü einen beliebigen Pfad.
 Die Mod skaliert das Bild auf 128x128 und sendet es stückweise als
 `diawars:image`-Paket an den Server. Die Antwort kommt im Chat;
 mit `/image <datei>` oder über das Bilder-Menü erhältst du die Karte.
+Der Upload lässt sich auch direkt aus dem Bilder-Menü öffnen
+(`diawars:image_open`-Signal des Servers).
 
 ## Build
 

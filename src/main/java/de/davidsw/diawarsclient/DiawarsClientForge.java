@@ -70,6 +70,25 @@ public final class DiawarsClientForge {
             )
             .build();
 
+    /**
+     * Clientbound channel for the {@code diawars:image_open} signal: the
+     * server sends it when the player clicks the upload button in the images
+     * menu, and the mod opens the upload UI on the next client tick.
+     */
+    private static final Channel<CustomPacketPayload> OPEN_CHANNEL = ChannelBuilder
+            .named(Identifier.fromNamespaceAndPath(MOD_ID, "image_open"))
+            .optional()
+            .networkProtocolVersion(1)
+            .payloadChannel()
+            .protocol(NetworkProtocol.PLAY)
+            .flow(PacketFlow.CLIENTBOUND)
+            .add(
+                    ImageOpenPayload.TYPE,
+                    ImageOpenPayload.CODEC,
+                    (payload, context) -> pendingOpenUploadScreen = true
+            )
+            .build();
+
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
         LOGGER.info("Diawars Client (Forge) initialized.");
     }
@@ -92,7 +111,7 @@ public final class DiawarsClientForge {
      * handling, which closes the current screen right after), so the tick
      * handler opens it on the next tick instead.
      */
-    public static boolean pendingOpenUploadScreen;
+    public static volatile boolean pendingOpenUploadScreen;
 
     /** Sends one prepared {@code diawars:image} chunk over the current connection. */
     public static void sendImage(String json) {

@@ -41,6 +41,7 @@ public class ImageUploadScreen extends Screen {
     private StringWidget statusLine;
     private File lastSelectedFile;
     private boolean nameTouched;
+    private boolean applyingAutofill;
     private boolean wasSending;
 
     public ImageUploadScreen() {
@@ -76,18 +77,20 @@ public class ImageUploadScreen extends Screen {
         this.addRenderableWidget(this.folderLabel);
 
         int listTop = 66;
-        int listBottom = this.height - 152;
+        int listBottom = this.height - 108;
         this.fileList = new FileList(this.minecraft, this.width, listBottom - listTop, listTop);
         this.addRenderableWidget(this.fileList);
 
-        int y = this.height - 140;
+        int y = this.height - 100;
         this.addRenderableWidget(new StringWidget(margin, y, this.width - margin * 2, 10,
                 Component.literal("Eigener Pfad (optional, sonst Auswahl aus der Liste):"), this.font));
         y += 12;
+        String home = System.getProperty("user.home");
+        String examplePath = new File(home, "Bild.png").getAbsolutePath();
         this.pathField = new EditBox(this.font, margin, y, this.width - margin * 2, FIELD_HEIGHT,
                 Component.literal("Pfad"));
         this.pathField.setMaxLength(260);
-        this.pathField.setHint(Component.literal("z. B. C:/Bilder/mein-bild.png"));
+        this.pathField.setHint(Component.literal("z. B. " + examplePath));
         this.pathField.setValue(savedPath);
         this.addRenderableWidget(this.pathField);
         y += 24;
@@ -98,10 +101,14 @@ public class ImageUploadScreen extends Screen {
         this.nameField.setMaxLength(32);
         this.nameField.setHint(Component.literal("Dateiname auf dem Server"));
         this.nameField.setValue(savedName);
-        this.nameField.setResponder(value -> this.nameTouched = true);
+        this.nameField.setResponder(value -> {
+            if (!this.applyingAutofill) {
+                this.nameTouched = true;
+            }
+        });
         this.nameTouched = savedNameTouched;
         this.addRenderableWidget(this.nameField);
-        y += 24;
+        y += 20;
         this.statusLine = new StringWidget(margin, y, this.width - margin * 2, 12,
                 Component.literal(""), this.font);
         this.addRenderableWidget(this.statusLine);
@@ -111,13 +118,13 @@ public class ImageUploadScreen extends Screen {
         int rowWidth = buttonWidth * 3 + gap * 2;
         int buttonX = (this.width - rowWidth) / 2;
         int buttonY = this.height - 30;
-        this.addRenderableWidget(Button.builder(Component.literal("Aktualisieren"),
-                button -> this.refreshList()).bounds(buttonX, buttonY, buttonWidth, 20).build());
-        this.uploadButton = Button.builder(Component.literal("Hochladen"),
-                button -> this.onUpload()).bounds(buttonX + buttonWidth + gap, buttonY, buttonWidth, 20).build();
-        this.addRenderableWidget(this.uploadButton);
         this.addRenderableWidget(Button.builder(Component.literal("Schließen"),
-                button -> this.onClose()).bounds(buttonX + (buttonWidth + gap) * 2, buttonY, buttonWidth, 20).build());
+                button -> this.onClose()).bounds(buttonX, buttonY, buttonWidth, 20).build());
+        this.addRenderableWidget(Button.builder(Component.literal("Aktualisieren"),
+                button -> this.refreshList()).bounds(buttonX + buttonWidth + gap, buttonY, buttonWidth, 20).build());
+        this.uploadButton = Button.builder(Component.literal("Weiter"),
+                button -> this.onUpload()).bounds(buttonX + (buttonWidth + gap) * 2, buttonY, buttonWidth, 20).build();
+        this.addRenderableWidget(this.uploadButton);
 
         this.refreshList();
     }
@@ -133,7 +140,12 @@ public class ImageUploadScreen extends Screen {
             this.pathField.setValue("");
             if (!this.nameTouched) {
                 String derived = ImageUploader.deriveName(selectedFile);
-                this.nameField.setValue(derived != null ? derived : "");
+                this.applyingAutofill = true;
+                try {
+                    this.nameField.setValue(derived != null ? derived : "");
+                } finally {
+                    this.applyingAutofill = false;
+                }
             }
         } else if (selectedFile == null) {
             this.lastSelectedFile = null;
@@ -166,18 +178,20 @@ public class ImageUploadScreen extends Screen {
         List<File> files = ImageUploader.listImages(this.folder);
         String info = this.folder.isDirectory() ? files.size() + " Bilder" : "Ordner fehlt";
         this.folderLabel.setMessage(Component.literal(shortenFolderText(
-                "Ordner: " + this.folder.getAbsolutePath() + " (" + info + ")")));
+                this.folder.getAbsolutePath() + " (" + info + ")")));
         List<FileList.Entry> entries = new ArrayList<>();
         for (File file : files) {
             entries.add(new FileList.Entry(this.font, file));
         }
         this.fileList.replaceEntries(entries);
+        this.fileList.setScrollAmount(0.0);
         this.lastSelectedFile = null;
         this.updateFolderButtons();
     }
 
     private void setFolder(File folder) {
         this.folder = folder;
+        this.nameTouched = false;
         this.refreshList();
     }
 
@@ -265,8 +279,20 @@ public class ImageUploadScreen extends Screen {
             public void extractContent(GuiGraphicsExtractor extractor, int x, int y, boolean hovered, float partialTick) {
                 // NOTE: use the entry's own content coords like vanilla does;
                 // the x/y parameters are not the row position.
-                extractor.text(this.font, Component.literal(this.file.getName()),
-                        this.getContentX() + 6, this.getContentY() + 6, hovered ? 0xFFFFFFA0 : 0xFFFFFFFF);
+                extractor.text(this.font, Component.literal(shortenToFit(this.file.getName())),
+                        this.getContentX() + 2, this.getContentY() + 6, hovered ? 0xFFFFFFA0 : 0xFFFFFFFF);
+            }
+
+            /** Cuts the file name with "..." so it stays inside the list. */
+            private String shortenToFit(String name) {
+                int maxWidth = this.getContentWidth() - 4;
+                if (this.font.width(name) <= maxWidth) {
+                    return name;
+                }
+                while (name.length() > 1 && this.font.width(name + "...") > maxWidth) {
+                    name = name.substring(0, name.length() - 1);
+                }
+                return name + "...";
             }
         }
     }

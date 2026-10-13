@@ -34,8 +34,11 @@ public class ImageCropScreen extends Screen {
     private final String uploadName;
 
     private DynamicTexture previewTexture;
+    private BufferedImage sourceImage;
     private int imageWidth;
     private int imageHeight;
+    private int texWidth;
+    private int texHeight;
     private String loadError;
 
     private int selX;
@@ -57,7 +60,7 @@ public class ImageCropScreen extends Screen {
 
     @Override
     protected void init() {
-        if (this.previewTexture == null && this.loadError == null) {
+        if (this.sourceImage == null && this.loadError == null) {
             this.loadPreview();
         }
         String savedInfo = this.lastInfo;
@@ -78,14 +81,15 @@ public class ImageCropScreen extends Screen {
         this.confirmButton = Button.builder(Component.literal("Hochladen"),
                 button -> this.onConfirm())
                 .bounds(buttonX + buttonWidth + gap, buttonY, buttonWidth, 20).build();
-        this.confirmButton.active = this.previewTexture != null;
         this.addRenderableWidget(this.confirmButton);
+
+        this.refreshPreviewTexture();
     }
 
     private void loadPreview() {
-        // Decode via ImageIO (same decoder as the upload), then re-encode as
-        // PNG: NativeImage only decodes PNG, so this keeps preview and upload
-        // consistent for every supported format (PNG/JPG/GIF/BMP).
+        // Decode once via ImageIO (same decoder as the upload): supports
+        // PNG/JPG/GIF/BMP. The preview texture is built from this image in
+        // refreshPreviewTexture (see below).
         BufferedImage decoded;
         try {
             decoded = ImageIO.read(this.sourceFile);
@@ -96,36 +100,9 @@ public class ImageCropScreen extends Screen {
             this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
             return;
         }
-        NativeImage image;
-        try {
-            // Normalize to RGB first (same as the upload path): exotic color
-            // models (e.g. CMYK) and transparency would break PNG encoding.
-            BufferedImage rgb = new BufferedImage(decoded.getWidth(), decoded.getHeight(), BufferedImage.TYPE_INT_RGB);
-            java.awt.Graphics2D g = rgb.createGraphics();
-            try {
-                g.drawImage(decoded, 0, 0, null);
-            } finally {
-                g.dispose();
-            }
-            ByteArrayOutputStream png = new ByteArrayOutputStream();
-            if (!ImageIO.write(rgb, "png", png)) {
-                throw new IOException("encode failed");
-            }
-            image = NativeImage.read(new ByteArrayInputStream(png.toByteArray()));
-        } catch (IOException | RuntimeException e) {
-            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
-            return;
-        }
-        this.imageWidth = image.getWidth();
-        this.imageHeight = image.getHeight();
-        if (this.imageWidth < 1 || this.imageHeight < 1) {
-            image.close();
-            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
-            return;
-        }
-        this.minecraft.getTextureManager().release(PREVIEW_ID);
-        this.previewTexture = new DynamicTexture(() -> "diawars crop preview", image);
-        this.minecraft.getTextureManager().register(PREVIEW_ID, this.previewTexture);
+        this.sourceImage = decoded;
+        this.imageWidth = decoded.getWidth();
+        this.imageHeight = decoded.getHeight();
 
         int size = Math.min(this.imageWidth, this.imageHeight);
         this.selSize = size;
@@ -133,9 +110,54 @@ public class ImageCropScreen extends Screen {
         this.selY = (this.imageHeight - size) / 2;
     }
 
+    /**
+     * (Re)builds the preview texture at exactly the currently drawn quad
+     * size. The blit below samples the texture 1:1, so the texture must match
+     * the quad — scaling on the GPU via mismatched blit sizes does not work.
+     */
+    private void refreshPreviewTexture() {
+        if (this.sourceImage == null) {
+            return;
+        }
+        int drawW = this.previewDrawW();
+        int drawH = this.previewDrawH();
+        if (this.previewTexture != null && drawW == this.texWidth && drawH == this.texHeight) {
+            return;
+        }
+        if (this.previewTexture != null) {
+            this.previewTexture.close();
+            this.minecraft.getTextureManager().release(PREVIEW_ID);
+            this.previewTexture = null;
+        }
+        try {
+            BufferedImage scaled = new BufferedImage(drawW, drawH, BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D g = scaled.createGraphics();
+            try {
+                g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                        java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                g.drawImage(this.sourceImage, 0, 0, drawW, drawH, null);
+            } finally {
+                g.dispose();
+            }
+            ByteArrayOutputStream png = new ByteArrayOutputStream();
+            if (!ImageIO.write(scaled, "png", png)) {
+                throw new IOException("encode failed");
+            }
+            NativeImage image = NativeImage.read(new ByteArrayInputStream(png.toByteArray()));
+            this.minecraft.getTextureManager().release(PREVIEW_ID);
+            this.previewTexture = new DynamicTexture(() -> "diawars crop preview", image);
+            this.minecraft.getTextureManager().register(PREVIEW_ID, this.previewTexture);
+            this.texWidth = drawW;
+            this.texHeight = drawH;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            this.loadError = "Vorschau konnte nicht erstellt werden.";
+        }
+    }
+
     @Override
     public void removed() {
         super.removed();
+        this.sourceImage = null;
         if (this.previewTexture != null) {
             // DynamicTexture.close also frees its pixels.
             this.previewTexture.close();
@@ -146,6 +168,7 @@ public class ImageCropScreen extends Screen {
 
     @Override
     public void tick() {
+        this.confirmButton.active = this.previewTexture != null;
         if (this.previewTexture != null) {
             String info = "\"" + this.uploadName + "\" · Auswahl "
                     + this.selSize + "x" + this.selSize + " → 128x128";
@@ -171,18 +194,16 @@ public class ImageCropScreen extends Screen {
             return;
         }
 
-        int previewTop = 30;
-        int previewBottom = this.height - 88;
-        int availW = this.width - 40;
-        int availH = previewBottom - previewTop;
-        double scale = Math.min((double) availW / this.imageWidth, (double) availH / this.imageHeight);
-        int drawW = Math.max(1, (int) (this.imageWidth * scale));
-        int drawH = Math.max(1, (int) (this.imageHeight * scale));
+        int drawW = this.previewDrawW();
+        int drawH = this.previewDrawH();
         int drawX = (this.width - drawW) / 2;
-        int drawY = previewTop + (availH - drawH) / 2;
+        int drawY = 30 + (((this.height - 88) - 30) - drawH) / 2;
 
+        // 1:1 blit: the texture is built at exactly this quad size.
         extractor.blit(RenderPipelines.GUI_TEXTURED, PREVIEW_ID,
-                drawX, drawY, 0.0F, 0.0F, drawW, drawH, this.imageWidth, this.imageHeight);
+                drawX, drawY, 0.0F, 0.0F, drawW, drawH, drawW, drawH);
+
+        double scale = this.previewScale();
 
         int sx0 = drawX + (int) (this.selX * scale);
         int sy0 = drawY + (int) (this.selY * scale);
@@ -269,19 +290,25 @@ public class ImageCropScreen extends Screen {
         return Math.min((double) availW / this.imageWidth, (double) availH / this.imageHeight);
     }
 
+    private int previewDrawW() {
+        return Math.max(1, (int) (this.imageWidth * this.previewScale()));
+    }
+
+    private int previewDrawH() {
+        return Math.max(1, (int) (this.imageHeight * this.previewScale()));
+    }
+
     private int previewX() {
-        int drawW = Math.max(1, (int) (this.imageWidth * this.previewScale()));
-        return (this.width - drawW) / 2;
+        return (this.width - this.previewDrawW()) / 2;
     }
 
     private int previewY() {
-        int drawH = Math.max(1, (int) (this.imageHeight * this.previewScale()));
-        return 30 + (((this.height - 88) - 30) - drawH) / 2;
+        return 30 + (((this.height - 88) - 30) - this.previewDrawH()) / 2;
     }
 
     private boolean inPreview(double mouseX, double mouseY) {
-        int drawW = Math.max(1, (int) (this.imageWidth * this.previewScale()));
-        int drawH = Math.max(1, (int) (this.imageHeight * this.previewScale()));
+        int drawW = this.previewDrawW();
+        int drawH = this.previewDrawH();
         int drawX = this.previewX();
         int drawY = this.previewY();
         return mouseX >= drawX && mouseX < drawX + drawW && mouseY >= drawY && mouseY < drawH + drawY;

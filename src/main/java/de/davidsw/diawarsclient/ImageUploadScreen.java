@@ -22,8 +22,8 @@ import java.util.List;
  * to the Diawars server as a chunked {@code diawars:image} payload. Files can
  * be chosen from the {@code diawars-images} folder inside the game directory
  * (refreshable list) or via an arbitrary path typed into the path field. The
- * upload name defaults to the file name and can be edited. Opened via the
- * {@code U} key (controls menu) or {@code /diawarsimage}.</p>
+ * upload name defaults to the file name and can be edited. Opened from the
+ * server (images menu upload button, {@code /image upload}).</p>
  */
 public class ImageUploadScreen extends Screen {
     private static final int LIST_ITEM_HEIGHT = 20;
@@ -146,8 +146,8 @@ public class ImageUploadScreen extends Screen {
 
     private void refreshList() {
         List<File> files = ImageUploader.listImages(this.folder);
-        this.folderLabel.setMessage(Component.literal(
-                "Ordner: " + this.folder.getAbsolutePath() + " (" + files.size() + " Bilder)"));
+        this.folderLabel.setMessage(Component.literal(shortenFolderText(
+                "Ordner: " + this.folder.getAbsolutePath() + " (" + files.size() + " Bilder)")));
         List<FileList.Entry> entries = new ArrayList<>();
         for (File file : files) {
             entries.add(new FileList.Entry(this.font, file));
@@ -193,6 +193,19 @@ public class ImageUploadScreen extends Screen {
         this.statusLine.setMessage(Component.literal(text).withStyle(color));
     }
 
+    /** Shortens the folder label from the front so it fits the screen width. */
+    private String shortenFolderText(String text) {
+        int maxWidth = this.width - 40;
+        if (this.font.width(text) <= maxWidth) {
+            return text;
+        }
+        String tail = text;
+        while (tail.length() > 1 && this.font.width("..." + tail) > maxWidth) {
+            tail = tail.substring(1);
+        }
+        return "..." + tail;
+    }
+
     private static final class FileList extends ObjectSelectionList<FileList.Entry> {
         FileList(Minecraft minecraft, int width, int height, int y) {
             super(minecraft, width, height, y, LIST_ITEM_HEIGHT);
@@ -218,8 +231,10 @@ public class ImageUploadScreen extends Screen {
 
             @Override
             public void extractContent(GuiGraphicsExtractor extractor, int x, int y, boolean hovered, float partialTick) {
+                // NOTE: use the entry's own content coords like vanilla does;
+                // the x/y parameters are not the row position.
                 extractor.text(this.font, Component.literal(this.file.getName()),
-                        x + 6, y + 5, hovered ? 0xFFFFFFA0 : 0xFFFFFFFF);
+                        this.getContentX() + 6, this.getContentY() + 6, hovered ? 0xFFFFFFA0 : 0xFFFFFFFF);
             }
         }
     }

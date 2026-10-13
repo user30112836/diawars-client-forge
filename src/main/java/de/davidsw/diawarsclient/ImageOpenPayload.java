@@ -13,8 +13,7 @@ import org.jspecify.annotations.NonNull;
  * <p>Wire format and semantics are identical to the Fabric mod
  * ({@code diawars:image_open}, empty body). The server sends it when the
  * player clicks the upload button in the images menu; the client opens the
- * screen on the next client tick (same deferred path as the
- * {@code /diawarsimage} command).</p>
+ * screen on the next client tick.</p>
  */
 public record ImageOpenPayload() implements CustomPacketPayload {
     public static final CustomPacketPayload.Type<ImageOpenPayload> TYPE =

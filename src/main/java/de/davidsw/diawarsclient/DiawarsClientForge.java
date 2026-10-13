@@ -1,16 +1,11 @@
 package de.davidsw.diawarsclient;
 
-import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.logging.LogUtils;
-import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
-import net.minecraft.commands.Commands;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.resources.Identifier;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
-import net.minecraftforge.client.event.RegisterClientCommandsEvent;
-import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -19,7 +14,6 @@ import net.minecraftforge.network.Channel;
 import net.minecraftforge.network.ChannelBuilder;
 import net.minecraftforge.network.NetworkProtocol;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 /**
  * Forge port of the Fabric {@code DiawarsClient}.
@@ -102,14 +96,11 @@ public final class DiawarsClientForge {
         }
     }
 
-    /** Keybind opening the image upload screen (U by default, see controls menu). */
-    public static KeyMapping openUploadScreenKey;
-
     /**
-     * Set by the {@code /diawarsimage} command: the screen must NOT open
-     * directly in the command callback (it runs inside ChatScreen input
-     * handling, which closes the current screen right after), so the tick
-     * handler opens it on the next tick instead.
+     * Set when the server asks us to open the upload UI (via the
+     * {@code diawars:image_open} signal, e.g. from the images menu or
+     * {@code /image upload}). The screen opens on the next client tick
+     * because screen changes must not happen inside network handling.
      */
     public static volatile boolean pendingOpenUploadScreen;
 
@@ -157,26 +148,13 @@ public final class DiawarsClientForge {
         }
 
         @SubscribeEvent
-        public static void onRegisterKeys(RegisterKeyMappingsEvent event) {
-            openUploadScreenKey = new KeyMapping(
-                    "key.diawars_client.upload_image",
-                    InputConstants.Type.KEYSYM,
-                    GLFW.GLFW_KEY_U,
-                    KeyMapping.Category.MISC
-            );
-            event.register(openUploadScreenKey);
-        }
-
-        @SubscribeEvent
         public static void onClientTick(TickEvent.ClientTickEvent.Post event) {
-            Minecraft minecraft = Minecraft.getInstance();
-            boolean open = openUploadScreenKey != null && openUploadScreenKey.consumeClick();
             if (pendingOpenUploadScreen) {
                 pendingOpenUploadScreen = false;
-                open = true;
-            }
-            if (minecraft.player != null && open) {
-                minecraft.setScreenAndShow(new ImageUploadScreen());
+                Minecraft minecraft = Minecraft.getInstance();
+                if (minecraft.player != null) {
+                    minecraft.setScreenAndShow(new ImageUploadScreen());
+                }
             }
             if (ImageUploader.hasQueued() && canSendImages()) {
                 int sent = 0;
@@ -185,14 +163,6 @@ public final class DiawarsClientForge {
                     sent++;
                 }
             }
-        }
-
-        @SubscribeEvent
-        public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
-            event.getDispatcher().register(Commands.literal("diawarsimage").executes(context -> {
-                pendingOpenUploadScreen = true;
-                return 1;
-            }));
         }
     }
 }

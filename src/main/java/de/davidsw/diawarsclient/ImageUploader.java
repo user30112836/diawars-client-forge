@@ -40,7 +40,7 @@ public final class ImageUploader {
     /** Folder inside the game directory where players drop their images. */
     public static final String FOLDER_NAME = "diawars-images";
 
-    private static final String[] EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif", "bmp"};
+    private static final String[] EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp"};
     private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9._-]{1,32}");
     private static final Gson GSON = new Gson();
 
@@ -229,7 +229,7 @@ public final class ImageUploader {
 
         BufferedImage image = ImageIO.read(file);
         if (image == null) {
-            throw new IOException("Datei ist kein lesbares Bild (PNG/JPG erwartet).");
+            throw new IOException("Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).");
         }
         if (crop != null) {
             image = applyCrop(image, crop);

@@ -12,10 +12,12 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import javax.imageio.ImageIO;
 
 /**
  * Second upload step: shows the image and lets the player pick the square
@@ -81,18 +83,44 @@ public class ImageCropScreen extends Screen {
     }
 
     private void loadPreview() {
-        NativeImage image;
-        try (InputStream in = new FileInputStream(this.sourceFile)) {
-            image = NativeImage.read(in);
+        // Decode via ImageIO (same decoder as the upload), then re-encode as
+        // PNG: NativeImage only decodes PNG, so this keeps preview and upload
+        // consistent for every supported format (PNG/JPG/GIF/BMP).
+        BufferedImage decoded;
+        try {
+            decoded = ImageIO.read(this.sourceFile);
         } catch (IOException | RuntimeException e) {
-            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG erwartet).";
+            decoded = null;
+        }
+        if (decoded == null || decoded.getWidth() < 1 || decoded.getHeight() < 1) {
+            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
+            return;
+        }
+        NativeImage image;
+        try {
+            // Normalize to RGB first (same as the upload path): exotic color
+            // models (e.g. CMYK) and transparency would break PNG encoding.
+            BufferedImage rgb = new BufferedImage(decoded.getWidth(), decoded.getHeight(), BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D g = rgb.createGraphics();
+            try {
+                g.drawImage(decoded, 0, 0, null);
+            } finally {
+                g.dispose();
+            }
+            ByteArrayOutputStream png = new ByteArrayOutputStream();
+            if (!ImageIO.write(rgb, "png", png)) {
+                throw new IOException("encode failed");
+            }
+            image = NativeImage.read(new ByteArrayInputStream(png.toByteArray()));
+        } catch (IOException | RuntimeException e) {
+            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
             return;
         }
         this.imageWidth = image.getWidth();
         this.imageHeight = image.getHeight();
         if (this.imageWidth < 1 || this.imageHeight < 1) {
             image.close();
-            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG erwartet).";
+            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
             return;
         }
         this.minecraft.getTextureManager().release(PREVIEW_ID);
@@ -166,7 +194,8 @@ public class ImageCropScreen extends Screen {
         extractor.fill(drawX, sy1, drawX + drawW, drawY + drawH, dim);
         extractor.fill(drawX, sy0, sx0, sy1, dim);
         extractor.fill(sx1, sy0, drawX + drawW, sy1, dim);
-        extractor.outline(sx0, sy0, sx1, sy1, 0xFFFFFFFF);
+        // NOTE: outline takes x/y plus width/height (not two corners).
+        extractor.outline(sx0, sy0, sx1 - sx0, sy1 - sy0, 0xFFFFFFFF);
     }
 
     @Override

@@ -52,6 +52,10 @@ public final class ImageUploader {
     public record PreparedUpload(String fileName, List<String> chunks) {
     }
 
+    /** Square crop area in source image pixels. */
+    public record CropArea(int x, int y, int size) {
+    }
+
     public static File getFolder(Minecraft minecraft) {
         File dir = new File(minecraft.gameDirectory, FOLDER_NAME);
         dir.mkdirs();
@@ -207,20 +211,28 @@ public final class ImageUploader {
      * @throws IllegalArgumentException when the upload name is invalid
      */
     public static PreparedUpload prepare(File file, String wantedName) throws IOException {
-        if (file == null || !file.isFile()) {
-            throw new IOException("Datei nicht gefunden: " + (file == null ? "?" : file.getPath()));
-        }
-        if (file.length() > MAX_SOURCE_BYTES) {
-            throw new IOException("Datei ist zu groß (max. 16 MB).");
-        }
-        String name = wantedName == null || wantedName.isBlank() ? deriveName(file) : sanitize(wantedName);
-        if (name == null) {
-            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - (max. 32 Zeichen, nicht \"all\").");
-        }
+        return prepare(file, wantedName, null);
+    }
+
+    /**
+     * Reads, crops (square), resizes (128x128) and chunks an image.
+     *
+     * @param file       source image on the local file system
+     * @param wantedName upload name, or null/blank to derive it from the file
+     * @param crop       square area to use, or null for the whole image
+     * @throws IOException              when the file cannot be read as an image
+     * @throws IllegalArgumentException when the upload name is invalid
+     */
+    public static PreparedUpload prepare(File file, String wantedName, CropArea crop) throws IOException {
+        validateSource(file);
+        String name = resolveName(file, wantedName);
 
         BufferedImage image = ImageIO.read(file);
         if (image == null) {
             throw new IOException("Datei ist kein lesbares Bild (PNG/JPG erwartet).");
+        }
+        if (crop != null) {
+            image = applyCrop(image, crop);
         }
 
         BufferedImage resized = new BufferedImage(IMAGE_SIZE, IMAGE_SIZE, BufferedImage.TYPE_INT_RGB);
@@ -270,5 +282,43 @@ public final class ImageUploader {
 
     public static synchronized void clearQueue() {
         QUEUE.clear();
+    }
+
+    /** Checks file presence and size without decoding (for pre-validation). */
+    public static void validateSource(File file) throws IOException {
+        if (file == null || !file.isFile()) {
+            throw new IOException("Datei nicht gefunden: " + (file == null ? "?" : file.getPath()));
+        }
+        if (file.length() > MAX_SOURCE_BYTES) {
+            throw new IOException("Datei ist zu groß (max. 16 MB).");
+        }
+    }
+
+    /** Resolves the effective upload name or throws when invalid. */
+    public static String resolveName(File file, String wantedName) {
+        String name = wantedName == null || wantedName.isBlank() ? deriveName(file) : sanitize(wantedName);
+        if (name == null) {
+            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - (max. 32 Zeichen, nicht \"all\").");
+        }
+        return name;
+    }
+
+    /** Cuts the square crop area out of the image (clamped to the bounds). */
+    private static BufferedImage applyCrop(BufferedImage image, CropArea crop) throws IOException {
+        int size = Math.min(crop.size(), Math.min(image.getWidth(), image.getHeight()));
+        if (size < 1) {
+            throw new IOException("Ungültiger Bildausschnitt.");
+        }
+        int x = Math.max(0, Math.min(crop.x(), image.getWidth() - size));
+        int y = Math.max(0, Math.min(crop.y(), image.getHeight() - size));
+        BufferedImage sub = image.getSubimage(x, y, size, size);
+        BufferedImage copy = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = copy.createGraphics();
+        try {
+            g.drawImage(sub, 0, 0, null);
+        } finally {
+            g.dispose();
+        }
+        return copy;
     }
 }

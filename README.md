@@ -25,7 +25,9 @@ Mit den Knöpfen wechselst du zwischen Game-Ordner, Bilder-Ordner und
 Downloads. Die Systemordner folgen der OS-Konfiguration (XDG
 `user-dirs.dirs` auf Linux, sonst `~/Pictures` bzw. `~/Downloads`). Öffne den Upload über das Bilder-Menü auf dem Server oder mit
 `/image upload`. Die Mod skaliert das Bild auf 128x128 und sendet es
-stückweise als `diawars:image`-Paket an den Server. Die Antwort kommt im
+stückweise als `diawars:image`-Paket an den Server. Vor dem Senden
+wählst du im Zuschneide-Menü den quadratischen Ausschnitt (ziehen zum
+Verschieben, Mausrad für die Größe). Die Antwort kommt im
 Chat; mit `/image get <datei>` oder über das Bilder-Menü erhältst du
 die Karte.
 

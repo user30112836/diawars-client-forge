@@ -220,21 +220,16 @@ public class ImageUploadScreen extends Screen {
         }
 
         String name = this.nameField.getValue().trim();
-        ImageUploader.PreparedUpload upload;
+        String effectiveName;
         try {
-            upload = ImageUploader.prepare(source, name.isEmpty() ? null : name);
+            ImageUploader.validateSource(source);
+            effectiveName = ImageUploader.resolveName(source, name.isEmpty() ? null : name);
         } catch (Exception e) {
             this.setStatus("Fehler: " + e.getMessage(), ChatFormatting.RED);
             return;
         }
 
-        if (!DiawarsClientForge.canSendImages()) {
-            this.setStatus("Fehler: Nicht mit einem Server verbunden!", ChatFormatting.RED);
-            return;
-        }
-
-        ImageUploader.enqueue(upload.chunks());
-        this.setStatus("Sende \"" + upload.fileName() + "\" (" + upload.chunks().size() + " Teile) ...", ChatFormatting.YELLOW);
+        this.minecraft.setScreenAndShow(new ImageCropScreen(source, effectiveName));
     }
 
     private void setStatus(String text, ChatFormatting color) {

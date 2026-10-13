@@ -14,7 +14,17 @@ und Forge-Spieler identisch verarbeiten kann.
   `fabricloader`, `fabric-*` filtert.
 - Shader-Erkennung: `iris` oder `oculus` (Forge-Fork) via `IrisApi` (Reflection).
 - Netzwerk: Forge-`PayloadChannel` (`PLAY`/`SERVERBOUND`, `optional()` für
-  Vanilla-/Paper-Server), Paket-Id `diawars:client_info`.
+  Vanilla-/Paper-Server), Paket-Id `diawars:client_info` (plus
+  `diawars:image` für Bild-Uploads, identisches Chunk-Format wie Fabric).
+
+## Bilder hochladen
+
+Lege Bilder (PNG/JPG/...) in den Ordner `diawars-images` in deinem
+Minecraft-Verzeichnis oder wähle über das Menü einen beliebigen Pfad.
+Öffne den Upload mit der Taste `U` (Steuerung) oder `/diawarsimage`.
+Die Mod skaliert das Bild auf 128x128 und sendet es stückweise als
+`diawars:image`-Paket an den Server. Die Antwort kommt im Chat;
+mit `/image <datei>` oder über das Bilder-Menü erhältst du die Karte.
 
 ## Build
 

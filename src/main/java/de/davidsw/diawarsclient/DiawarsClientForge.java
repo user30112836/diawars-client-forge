@@ -1,10 +1,17 @@
 package de.davidsw.diawarsclient;
 
+import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.logging.LogUtils;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
+import net.minecraft.commands.Commands;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.resources.Identifier;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
+import net.minecraftforge.client.event.RegisterClientCommandsEvent;
+import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
@@ -12,8 +19,8 @@ import net.minecraftforge.network.Channel;
 import net.minecraftforge.network.ChannelBuilder;
 import net.minecraftforge.network.NetworkProtocol;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
-
 /**
  * Forge port of the Fabric {@code DiawarsClient}.
  *
@@ -54,6 +61,13 @@ public final class DiawarsClientForge {
                         // Client never receives this payload; only sends it.
                     }
             )
+            .add(
+                    ImagePayload.TYPE,
+                    ImagePayload.CODEC,
+                    (payload, context) -> {
+                        // Client never receives image chunks; only sends them.
+                    }
+            )
             .build();
 
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
@@ -69,6 +83,36 @@ public final class DiawarsClientForge {
         }
     }
 
+    /** Keybind opening the image upload screen (U by default, see controls menu). */
+    public static KeyMapping openUploadScreenKey;
+
+    /** Sends one prepared {@code diawars:image} chunk over the current connection. */
+    public static void sendImage(String json) {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return;
+            }
+            CHANNEL.send(new ImagePayload(json), minecraft.getConnection().getConnection());
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars image packet.", e);
+        }
+    }
+
+    /** Whether image chunks can currently be sent (connected to a server). */
+    public static boolean canSendImages() {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return false;
+            }
+            net.minecraft.network.Connection raw = minecraft.getConnection().getConnection();
+            return raw != null && raw.isConnected();
+        } catch (Exception | LinkageError e) {
+            return false;
+        }
+    }
+
     @Mod.EventBusSubscriber(modid = MOD_ID, value = Dist.CLIENT)
     public static class ClientEvents {
         @SubscribeEvent
@@ -78,6 +122,45 @@ public final class DiawarsClientForge {
                 return;
             }
             sendClientInfo(event.getConnection());
+        }
+
+        @SubscribeEvent
+        public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+            ImageUploader.clearQueue();
+        }
+
+        @SubscribeEvent
+        public static void onRegisterKeys(RegisterKeyMappingsEvent event) {
+            openUploadScreenKey = new KeyMapping(
+                    "key.diawars_client.upload_image",
+                    InputConstants.Type.KEYSYM,
+                    GLFW.GLFW_KEY_U,
+                    KeyMapping.Category.MISC
+            );
+            event.register(openUploadScreenKey);
+        }
+
+        @SubscribeEvent
+        public static void onClientTick(TickEvent.ClientTickEvent.Post event) {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.player != null && openUploadScreenKey != null && openUploadScreenKey.consumeClick()) {
+                minecraft.setScreenAndShow(new ImageUploadScreen());
+            }
+            if (ImageUploader.hasQueued() && canSendImages()) {
+                int sent = 0;
+                while (sent < 8 && ImageUploader.hasQueued()) {
+                    sendImage(ImageUploader.poll());
+                    sent++;
+                }
+            }
+        }
+
+        @SubscribeEvent
+        public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
+            event.getDispatcher().register(Commands.literal("diawarsimage").executes(context -> {
+                Minecraft.getInstance().setScreenAndShow(new ImageUploadScreen());
+                return 1;
+            }));
         }
     }
 }

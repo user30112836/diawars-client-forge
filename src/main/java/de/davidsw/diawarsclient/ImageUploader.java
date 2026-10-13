@@ -58,6 +58,16 @@ public final class ImageUploader {
         return dir;
     }
 
+    /** System pictures folder ({@code ~/Pictures}); never created, may be missing. */
+    public static File getPicturesFolder() {
+        return new File(System.getProperty("user.home"), "Pictures");
+    }
+
+    /** System downloads folder ({@code ~/Downloads}); never created, may be missing. */
+    public static File getDownloadsFolder() {
+        return new File(System.getProperty("user.home"), "Downloads");
+    }
+
     public static List<File> listImages(File folder) {
         File[] files = folder.listFiles((dir, name) -> {
             String lower = name.toLowerCase(Locale.ROOT);

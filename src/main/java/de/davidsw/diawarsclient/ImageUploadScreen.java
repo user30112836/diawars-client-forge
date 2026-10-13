@@ -34,6 +34,9 @@ public class ImageUploadScreen extends Screen {
     private EditBox pathField;
     private EditBox nameField;
     private Button uploadButton;
+    private Button gameFolderButton;
+    private Button picturesButton;
+    private Button downloadsButton;
     private StringWidget folderLabel;
     private StringWidget statusLine;
     private File lastSelectedFile;
@@ -46,18 +49,33 @@ public class ImageUploadScreen extends Screen {
 
     @Override
     protected void init() {
-        this.folder = ImageUploader.getFolder(this.minecraft);
+        File gameFolder = ImageUploader.getFolder(this.minecraft);
+        if (this.folder == null) {
+            this.folder = gameFolder;
+        }
         String savedPath = this.pathField != null ? this.pathField.getValue() : "";
         String savedName = this.nameField != null ? this.nameField.getValue() : "";
         boolean savedNameTouched = this.nameTouched;
         this.clearWidgets();
 
         int margin = 20;
-        this.folderLabel = new StringWidget(margin, 30, this.width - margin * 2, 12,
+        int presetWidths = 90 + 70 + 90 + 8 * 2;
+        int presetX = (this.width - presetWidths) / 2;
+        this.gameFolderButton = Button.builder(Component.literal("Game-Ordner"),
+                button -> this.setFolder(gameFolder)).bounds(presetX, 28, 90, 20).build();
+        this.picturesButton = Button.builder(Component.literal("Bilder"),
+                button -> this.setFolder(ImageUploader.getPicturesFolder())).bounds(presetX + 98, 28, 70, 20).build();
+        this.downloadsButton = Button.builder(Component.literal("Downloads"),
+                button -> this.setFolder(ImageUploader.getDownloadsFolder())).bounds(presetX + 176, 28, 90, 20).build();
+        this.addRenderableWidget(this.gameFolderButton);
+        this.addRenderableWidget(this.picturesButton);
+        this.addRenderableWidget(this.downloadsButton);
+
+        this.folderLabel = new StringWidget(margin, 52, this.width - margin * 2, 12,
                 Component.literal("Ordner: ..."), this.font);
         this.addRenderableWidget(this.folderLabel);
 
-        int listTop = 44;
+        int listTop = 66;
         int listBottom = this.height - 152;
         this.fileList = new FileList(this.minecraft, this.width, listBottom - listTop, listTop);
         this.addRenderableWidget(this.fileList);
@@ -146,14 +164,28 @@ public class ImageUploadScreen extends Screen {
 
     private void refreshList() {
         List<File> files = ImageUploader.listImages(this.folder);
+        String info = this.folder.isDirectory() ? files.size() + " Bilder" : "Ordner fehlt";
         this.folderLabel.setMessage(Component.literal(shortenFolderText(
-                "Ordner: " + this.folder.getAbsolutePath() + " (" + files.size() + " Bilder)")));
+                "Ordner: " + this.folder.getAbsolutePath() + " (" + info + ")")));
         List<FileList.Entry> entries = new ArrayList<>();
         for (File file : files) {
             entries.add(new FileList.Entry(this.font, file));
         }
         this.fileList.replaceEntries(entries);
         this.lastSelectedFile = null;
+        this.updateFolderButtons();
+    }
+
+    private void setFolder(File folder) {
+        this.folder = folder;
+        this.refreshList();
+    }
+
+    private void updateFolderButtons() {
+        String current = this.folder.getAbsolutePath();
+        this.gameFolderButton.active = !current.equals(ImageUploader.getFolder(this.minecraft).getAbsolutePath());
+        this.picturesButton.active = !current.equals(ImageUploader.getPicturesFolder().getAbsolutePath());
+        this.downloadsButton.active = !current.equals(ImageUploader.getDownloadsFolder().getAbsolutePath());
     }
 
     private void onUpload() {

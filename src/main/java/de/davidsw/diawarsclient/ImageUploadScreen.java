@@ -132,7 +132,9 @@ public class ImageUploadScreen extends Screen {
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor extractor, int mouseX, int mouseY, float partialTick) {
-        this.extractBackground(extractor, mouseX, mouseY, partialTick);
+        // NOTE: do NOT call extractBackground here: the Gui already extracts
+        // the screen background before this runs, and extracting it again
+        // throws "Can only blur once per frame".
         super.extractRenderState(extractor, mouseX, mouseY, partialTick);
         extractor.centeredText(this.font, this.title, this.width / 2, 12, 0xFFFFFFFF);
     }

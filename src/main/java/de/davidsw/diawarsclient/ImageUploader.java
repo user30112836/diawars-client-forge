@@ -145,14 +145,35 @@ public final class ImageUploader {
         return result;
     }
 
-    /** Derives a server-compatible upload name from a file, or null if impossible. */
+    /**
+     * Derives a server-compatible upload name from a file, or null if
+     * impossible. Overlong names are shortened and rejected characters are
+     * dropped so the autofill still offers something usable (editable).
+     */
     public static String deriveName(File file) {
         String name = file.getName();
         int dot = name.lastIndexOf('.');
         if (dot > 0) {
             name = name.substring(0, dot);
         }
-        return sanitize(name);
+        String direct = sanitize(name);
+        if (direct != null) {
+            return direct;
+        }
+        StringBuilder cleaned = new StringBuilder();
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (isNameChar(c)) {
+                cleaned.append(c);
+            }
+        }
+        String shortened = cleaned.length() > 32 ? cleaned.substring(0, 32) : cleaned.toString();
+        return sanitize(shortened);
+    }
+
+    private static boolean isNameChar(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                || c == '.' || c == '_' || c == '-';
     }
 
     /**

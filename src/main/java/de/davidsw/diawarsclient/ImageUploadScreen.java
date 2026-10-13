@@ -140,11 +140,13 @@ public class ImageUploadScreen extends Screen {
             this.pathField.setValue("");
             if (!this.nameTouched) {
                 String derived = ImageUploader.deriveName(selectedFile);
-                this.applyingAutofill = true;
-                try {
-                    this.nameField.setValue(derived != null ? derived : "");
-                } finally {
-                    this.applyingAutofill = false;
+                if (derived != null) {
+                    this.applyingAutofill = true;
+                    try {
+                        this.nameField.setValue(derived);
+                    } finally {
+                        this.applyingAutofill = false;
+                    }
                 }
             }
         } else if (selectedFile == null) {

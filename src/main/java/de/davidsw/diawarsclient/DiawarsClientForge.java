@@ -86,6 +86,14 @@ public final class DiawarsClientForge {
     /** Keybind opening the image upload screen (U by default, see controls menu). */
     public static KeyMapping openUploadScreenKey;
 
+    /**
+     * Set by the {@code /diawarsimage} command: the screen must NOT open
+     * directly in the command callback (it runs inside ChatScreen input
+     * handling, which closes the current screen right after), so the tick
+     * handler opens it on the next tick instead.
+     */
+    public static boolean pendingOpenUploadScreen;
+
     /** Sends one prepared {@code diawars:image} chunk over the current connection. */
     public static void sendImage(String json) {
         try {
@@ -143,7 +151,12 @@ public final class DiawarsClientForge {
         @SubscribeEvent
         public static void onClientTick(TickEvent.ClientTickEvent.Post event) {
             Minecraft minecraft = Minecraft.getInstance();
-            if (minecraft.player != null && openUploadScreenKey != null && openUploadScreenKey.consumeClick()) {
+            boolean open = openUploadScreenKey != null && openUploadScreenKey.consumeClick();
+            if (pendingOpenUploadScreen) {
+                pendingOpenUploadScreen = false;
+                open = true;
+            }
+            if (minecraft.player != null && open) {
                 minecraft.setScreenAndShow(new ImageUploadScreen());
             }
             if (ImageUploader.hasQueued() && canSendImages()) {
@@ -158,7 +171,7 @@ public final class DiawarsClientForge {
         @SubscribeEvent
         public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
             event.getDispatcher().register(Commands.literal("diawarsimage").executes(context -> {
-                Minecraft.getInstance().setScreenAndShow(new ImageUploadScreen());
+                pendingOpenUploadScreen = true;
                 return 1;
             }));
         }

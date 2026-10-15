@@ -22,8 +22,8 @@ import javax.imageio.ImageIO;
 /**
  * Second upload step: shows the image and lets the player pick the square
  * area to upload. Drag inside the preview to move the square, use the mouse
- * wheel over the preview to change its size. Confirming crops the area,
- * scales it to 128x128 and queues the upload (see {@link ImageUploader}).
+ * wheel over the preview to change its size. Confirming crops the area and
+ * queues the upload at full resolution (see {@link ImageUploader}).
  */
 public class ImageCropScreen extends Screen {
     private static final Identifier PREVIEW_ID =
@@ -163,7 +163,7 @@ public class ImageCropScreen extends Screen {
         this.plusButton.active = ready;
         if (ready) {
             String info = "\"" + this.uploadName + "\" · Auswahl "
-                    + this.selSize + "x" + this.selSize + " → 128x128";
+                    + this.selSize + "x" + this.selSize + " (volle Auflösung)";
             if (!info.equals(this.lastInfo)) {
                 this.lastInfo = info;
                 this.infoLine.setMessage(Component.literal(info));

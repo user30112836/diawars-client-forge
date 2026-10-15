@@ -22,14 +22,27 @@ import java.util.regex.Pattern;
 /**
  * Forge port of the Fabric {@code ImageUploader}.
  *
- * <p>Reads local image files, resizes them to 128x128 and splits them into
- * small {@code diawars:image} payload chunks (see {@link ImagePayload}).
- * Prepared chunks are queued and sent paced (a few per client tick) by the
- * client tick handler, so uploads never burst the connection.</p>
+ * <p>Reads local image files and splits them into small {@code diawars:image}
+ * payload chunks at full resolution (see {@link ImagePayload}). Prepared
+ * chunks are queued and sent paced (a few per client tick) by the client tick
+ * handler, so uploads never burst the connection.</p>
  */
 public final class ImageUploader {
-    /** Map resolution: uploads are always resized to this (square) size. */
-    public static final int IMAGE_SIZE = 128;
+    /**
+     * Map thumbnail resolution: the server derives its 128x128 map view from
+     * whatever is uploaded, so uploads stay square (see the crop screen) but
+     * keep their full resolution for modded clients.
+     */
+    public static final int MAP_SIZE = 128;
+
+    /** Max stored image dimension (mirrors the server limit). */
+    public static final int MAX_DIMENSION = 2048;
+
+    /**
+     * Max PNG bytes per upload. Stays below the server cap (2 MB decoded) so
+     * a prepared upload is never rejected for its size.
+     */
+    public static final long MAX_UPLOAD_BYTES = 1_900_000L;
 
     /** Max base64 chars per chunk: keeps every payload well below packet limits. */
     public static final int MAX_CHUNK_CHARS = 20_000;
@@ -203,7 +216,7 @@ public final class ImageUploader {
     }
 
     /**
-     * Reads, resizes (128x128) and chunks an image.
+     * Reads and chunks an image at full resolution.
      *
      * @param file       source image on the local file system
      * @param wantedName upload name, or null/blank to derive it from the file
@@ -215,7 +228,13 @@ public final class ImageUploader {
     }
 
     /**
-     * Reads, crops (square), resizes (128x128) and chunks an image.
+     * Reads, crops (square) and chunks an image at full resolution.
+     *
+     * <p>The cropped square is kept at its native resolution (capped at
+     * {@value #MAX_DIMENSION}px and shrunk until the PNG fits
+     * {@value #MAX_UPLOAD_BYTES} bytes): the server stores it as-is for
+     * modded clients and derives the 128x128 map thumbnail itself, so
+     * vanilla and Bedrock players keep seeing maps.
      *
      * @param file       source image on the local file system
      * @param wantedName upload name, or null/blank to derive it from the file
@@ -235,17 +254,10 @@ public final class ImageUploader {
             image = applyCrop(image, crop);
         }
 
-        BufferedImage resized = new BufferedImage(IMAGE_SIZE, IMAGE_SIZE, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = resized.createGraphics();
-        try {
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-            g.drawImage(image, 0, 0, IMAGE_SIZE, IMAGE_SIZE, null);
-        } finally {
-            g.dispose();
-        }
+        BufferedImage fitted = fitForUpload(image);
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        if (!ImageIO.write(resized, "png", out)) {
+        if (!ImageIO.write(fitted, "png", out)) {
             throw new IOException("Bild konnte nicht kodiert werden.");
         }
         String base64 = Base64.getEncoder().encodeToString(out.toByteArray());
@@ -301,6 +313,44 @@ public final class ImageUploader {
             throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - (max. 32 Zeichen, nicht \"all\").");
         }
         return name;
+    }
+
+    /** Shrinks the image until it fits the server upload cap (never below 128px). */
+    private static BufferedImage fitForUpload(BufferedImage image) throws IOException {
+        BufferedImage current = image;
+        int largest = Math.max(current.getWidth(), current.getHeight());
+        if (largest > MAX_DIMENSION) {
+            current = scale(current, MAX_DIMENSION / (double) largest);
+        }
+        while (pngSize(current) > MAX_UPLOAD_BYTES) {
+            if (Math.min(current.getWidth(), current.getHeight()) <= MAP_SIZE) {
+                throw new IOException("Bild ist zu groß (max. 2 MB nach Verkleinerung).");
+            }
+            current = scale(current, 0.75);
+        }
+        return current;
+    }
+
+    private static BufferedImage scale(BufferedImage image, double factor) {
+        int width = Math.max(1, (int) Math.round(image.getWidth() * factor));
+        int height = Math.max(1, (int) Math.round(image.getHeight() * factor));
+        BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        try {
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g.drawImage(image, 0, 0, width, height, null);
+        } finally {
+            g.dispose();
+        }
+        return out;
+    }
+
+    private static long pngSize(BufferedImage image) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        if (!ImageIO.write(image, "png", out)) {
+            throw new IOException("Bild konnte nicht kodiert werden.");
+        }
+        return out.size();
     }
 
     /** Cuts the square crop area out of the image (clamped to the bounds). */

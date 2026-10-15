@@ -14,8 +14,9 @@ import org.jspecify.annotations.NonNull;
  * ({@code diawars:image}, one {@code STRING_UTF8} JSON chunk document per
  * packet: {@code {"file": "...", "part": 0, "total": N, "data": "<base64>"}}),
  * so the Diawars Paper plugin accepts both loaders interchangeably.
- * The client resizes the image to 128x128 before sending (see
- * {@link ImageUploader}); the server reassembles the parts.</p>
+ * The client uploads the cropped square at full resolution (see
+ * {@link ImageUploader}); the server reassembles the parts, stores the image
+ * and derives the 128x128 map thumbnail itself.</p>
  */
 public record ImagePayload(String json) implements CustomPacketPayload {
     public static final CustomPacketPayload.Type<ImagePayload> TYPE =

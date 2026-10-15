@@ -62,6 +62,34 @@ public final class DiawarsClientForge {
                         // Client never receives image chunks; only sends them.
                     }
             )
+            .add(
+                    ImageRequestPayload.TYPE,
+                    ImageRequestPayload.CODEC,
+                    (payload, context) -> {
+                        // Client never receives image requests; only sends them.
+                    }
+            )
+            .build();
+
+    /**
+     * Clientbound channel for full-resolution image downloads: the server
+     * answers {@code diawars:image_req} requests with chunked
+     * {@code diawars:image_data} documents, which {@link ImageDownloader}
+     * reassembles and swaps into map rendering.
+     */
+    private static final Channel<CustomPacketPayload> DATA_CHANNEL = ChannelBuilder
+            .named(Identifier.fromNamespaceAndPath(MOD_ID, "image_data"))
+            .optional()
+            .networkProtocolVersion(1)
+            .payloadChannel()
+            .protocol(NetworkProtocol.PLAY)
+            .flow(PacketFlow.CLIENTBOUND)
+            .add(
+                    ImageDataPayload.TYPE,
+                    ImageDataPayload.CODEC,
+                    (payload, context) -> context.enqueueWork(() ->
+                            ImageDownloader.handleDataJson(Minecraft.getInstance(), payload.json()))
+            )
             .build();
 
     /**
@@ -85,6 +113,13 @@ public final class DiawarsClientForge {
 
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
         LOGGER.info("Diawars Client (Forge) initialized.");
+        ImageDownloader.init(json -> {
+            if (!canSendImages()) {
+                return false;
+            }
+            sendImageRequest(json);
+            return true;
+        });
     }
 
     public static void sendClientInfo(net.minecraft.network.Connection connection) {
@@ -117,6 +152,19 @@ public final class DiawarsClientForge {
         }
     }
 
+    /** Sends one {@code diawars:image_req} document over the current connection. */
+    public static void sendImageRequest(String json) {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return;
+            }
+            CHANNEL.send(new ImageRequestPayload(json), minecraft.getConnection().getConnection());
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars image request packet.", e);
+        }
+    }
+
     /** Whether image chunks can currently be sent (connected to a server). */
     public static boolean canSendImages() {
         try {
@@ -145,6 +193,7 @@ public final class DiawarsClientForge {
         @SubscribeEvent
         public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
             ImageUploader.clearQueue();
+            ImageDownloader.clearSession(Minecraft.getInstance());
         }
 
         @SubscribeEvent
@@ -156,6 +205,7 @@ public final class DiawarsClientForge {
                     minecraft.setScreenAndShow(new ImageUploadScreen());
                 }
             }
+            ImageDownloader.tick(Minecraft.getInstance());
             if (ImageUploader.hasQueued() && canSendImages()) {
                 int sent = 0;
                 while (sent < 8 && ImageUploader.hasQueued()) {

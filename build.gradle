@@ -61,6 +61,11 @@ dependencies {
     implementation minecraft.dependency("net.minecraftforge:forge:${minecraft_version}-${forge_version}")
     // EventBus 7 compile-time validation (see Forge MDK examples).
     annotationProcessor 'net.minecraftforge:eventbus-validator:7.0.5'
+    // Sponge Mixin (bundled with Forge at runtime): only needed to compile
+    // the map-texture mixin. Official Mojang mappings need no refmap, so no
+    // MixinGradle plugin is required; the config is declared via the jar
+    // manifest below.
+    compileOnly 'org.spongepowered:mixin:0.8.7'
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -90,7 +95,9 @@ tasks.named('jar', Jar) {
             'Specification-Version'   : '1',
             'Implementation-Title'    : project.name,
             'Implementation-Version'  : project.jar.archiveVersion,
-            'Implementation-Vendor'   : mod_authors
+            'Implementation-Vendor'   : mod_authors,
+            // Lets ModLauncher apply our map-texture mixin at startup.
+            'MixinConfigs'            : 'diawars_client.mixins.json'
         ])
     }
 }

@@ -49,6 +49,12 @@ public final class ImageDownloader {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final Gson GSON = new Gson();
 
+    /** Max accepted download parts (mirrors the server negotiation cap). */
+    private static final int MAX_PARTS = 8192;
+
+    /** Max texture dimension for GL upload (mirrors the server image cap). */
+    private static final int MAX_TEXTURE_DIMENSION = 8192;
+
     /** Folder inside the game directory holding downloaded full images. */
     public static final String CACHE_FOLDER = "diawars-cache";
 
@@ -214,7 +220,7 @@ public final class ImageDownloader {
         int total = root.has("total") ? root.get("total").getAsInt() : -1;
         String data = root.has("data") && root.get("data").isJsonPrimitive()
                 ? root.get("data").getAsString() : null;
-        if (part < 0 || total < 1 || total > 256 || data == null) {
+        if (part < 0 || total < 1 || total > MAX_PARTS || data == null) {
             return;
         }
         String key = (mapId != null ? "map:" + mapId : "file:" + owner + "/" + file);
@@ -268,6 +274,17 @@ public final class ImageDownloader {
             image = NativeImage.read(new ByteArrayInputStream(png));
         } catch (Exception e) {
             LOGGER.warn("Ignoring unreadable diawars image {}/{}.", owner, file, e);
+            return;
+        }
+        if (image.getWidth() > MAX_TEXTURE_DIMENSION || image.getHeight() > MAX_TEXTURE_DIMENSION) {
+            int width = image.getWidth();
+            int height = image.getHeight();
+            image.close();
+            LOGGER.warn("Ignoring oversized diawars image {}/{} ({}x{}).", owner, file, width, height);
+            if (mapId == null) {
+                return;
+            }
+            NEGATIVE.put(mapId, System.currentTimeMillis());
             return;
         }
         Identifier id = Identifier.fromNamespaceAndPath("diawars-client", "maps/" + mapId);

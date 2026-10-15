@@ -36,13 +36,18 @@ public final class ImageUploader {
     public static final int MAP_SIZE = 128;
 
     /** Max stored image dimension (mirrors the server limit). */
-    public static final int MAX_DIMENSION = 2048;
+    public static final int MAX_DIMENSION = 8192;
 
     /**
-     * Max PNG bytes per upload. Stays below the server cap (2 MB decoded) so
-     * a prepared upload is never rejected for its size.
+     * Max PNG bytes per upload. Stays below the server cap (64 MB decoded) so
+     * a prepared upload is never rejected for its size. Transfers agree on
+     * the part count up front (offer/accept), so images are effectively as
+     * large as the player wants.
      */
-    public static final long MAX_UPLOAD_BYTES = 1_900_000L;
+    public static final long MAX_UPLOAD_BYTES = 63_000_000L;
+
+    /** How long an offer may go unanswered before the upload fails. */
+    private static final long OFFER_TIMEOUT_MILLIS = 30_000;
 
     /** Max base64 chars per chunk: keeps every payload well below packet limits. */
     public static final int MAX_CHUNK_CHARS = 20_000;
@@ -62,7 +67,22 @@ public final class ImageUploader {
     private ImageUploader() {
     }
 
-    public record PreparedUpload(String fileName, List<String> chunks) {
+    /** Loader-specific sender for {@code diawars:image_offer} documents. */
+    public interface OfferSender {
+        boolean sendOffer(String json);
+    }
+
+    private static OfferSender offerSender;
+    private static volatile PreparedUpload pendingUpload;
+    private static volatile long offerSentAt;
+    private static volatile boolean waitingForAccept;
+    private static volatile String offerError;
+
+    public static void initOfferSender(OfferSender sender) {
+        offerSender = sender;
+    }
+
+    public record PreparedUpload(String fileName, List<String> chunks, long bytes, String hash) {
     }
 
     /** Square crop area in source image pixels. */
@@ -260,7 +280,8 @@ public final class ImageUploader {
         if (!ImageIO.write(fitted, "png", out)) {
             throw new IOException("Bild konnte nicht kodiert werden.");
         }
-        String base64 = Base64.getEncoder().encodeToString(out.toByteArray());
+        byte[] png = out.toByteArray();
+        String base64 = Base64.getEncoder().encodeToString(png);
 
         List<String> chunks = new ArrayList<>();
         int total = (base64.length() + MAX_CHUNK_CHARS - 1) / MAX_CHUNK_CHARS;
@@ -273,7 +294,103 @@ public final class ImageUploader {
             json.addProperty("data", part);
             chunks.add(GSON.toJson(json));
         }
-        return new PreparedUpload(name, chunks);
+        return new PreparedUpload(name, chunks, png.length, sha256Hex(png));
+    }
+
+    /**
+     * Starts an upload: sends the offer so server and client agree on the
+     * part count first; chunks queue up once the server accepts. Returns
+     * false (and records an error) when another upload is still active.
+     */
+    public static synchronized boolean requestUpload(PreparedUpload upload) {
+        if (waitingForAccept || hasQueued()) {
+            offerError = "Bereits ein Upload aktiv, bitte warten.";
+            return false;
+        }
+        if (offerSender == null) {
+            offerError = "Keine Serververbindung für den Upload.";
+            return false;
+        }
+        JsonObject offer = new JsonObject();
+        offer.addProperty("file", upload.fileName());
+        offer.addProperty("bytes", upload.bytes());
+        offer.addProperty("total", upload.chunks().size());
+        offer.addProperty("hash", upload.hash());
+        if (!offerSender.sendOffer(GSON.toJson(offer))) {
+            offerError = "Der Upload konnte nicht gestartet werden (keine Verbindung?).";
+            return false;
+        }
+        pendingUpload = upload;
+        offerSentAt = System.currentTimeMillis();
+        waitingForAccept = true;
+        return true;
+    }
+
+    /**
+     * Handles one {@code diawars:image_accept} document (client thread only):
+     * queues the chunks on accept, records the error otherwise.
+     */
+    public static void handleAccept(String json) {
+        PreparedUpload pending = pendingUpload;
+        if (pending == null) {
+            return;
+        }
+        JsonObject root;
+        try {
+            root = GSON.fromJson(json, JsonObject.class);
+            if (root == null || !root.has("file")
+                    || !pending.fileName().equals(root.get("file").getAsString())) {
+                return;
+            }
+        } catch (Exception e) {
+            return;
+        }
+        pendingUpload = null;
+        waitingForAccept = false;
+        boolean accepted = root.has("accepted") && root.get("accepted").getAsBoolean();
+        if (accepted) {
+            enqueue(pending.chunks());
+        } else {
+            String error = root.has("error") && root.get("error").isJsonPrimitive()
+                    ? root.get("error").getAsString() : "Der Server hat den Upload abgelehnt.";
+            // Server messages use MiniMessage tags; the screen shows plain text.
+            offerError = error.replaceAll("<[^>]*>", "");
+        }
+    }
+
+    /** Fails a long-unanswered offer; call once per client tick. */
+    public static void tickOffer() {
+        if (waitingForAccept && System.currentTimeMillis() - offerSentAt > OFFER_TIMEOUT_MILLIS) {
+            pendingUpload = null;
+            waitingForAccept = false;
+            offerError = "Der Server antwortet nicht auf den Upload.";
+        }
+    }
+
+    public static boolean isWaitingForAccept() {
+        return waitingForAccept;
+    }
+
+    /** Returns and clears the last offer error, or null. */
+    public static String consumeOfferError() {
+        String error = offerError;
+        offerError = null;
+        return error;
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(bytes);
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     public static synchronized void enqueue(List<String> chunks) {
@@ -294,6 +411,8 @@ public final class ImageUploader {
 
     public static synchronized void clearQueue() {
         QUEUE.clear();
+        pendingUpload = null;
+        waitingForAccept = false;
     }
 
     /** Checks file presence and size without decoding (for pre-validation). */
@@ -324,7 +443,7 @@ public final class ImageUploader {
         }
         while (pngSize(current) > MAX_UPLOAD_BYTES) {
             if (Math.min(current.getWidth(), current.getHeight()) <= MAP_SIZE) {
-                throw new IOException("Bild ist zu groß (max. 2 MB nach Verkleinerung).");
+                throw new IOException("Bild ist zu groß (max. 64 MB nach Verkleinerung).");
             }
             current = scale(current, 0.75);
         }

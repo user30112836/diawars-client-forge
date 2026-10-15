@@ -69,13 +69,22 @@ public final class DiawarsClientForge {
                         // Client never receives image requests; only sends them.
                     }
             )
+            .add(
+                    ImageOfferPayload.TYPE,
+                    ImageOfferPayload.CODEC,
+                    (payload, context) -> {
+                        // Client never receives image offers; only sends them.
+                    }
+            )
             .build();
 
     /**
      * Clientbound channel for full-resolution image downloads: the server
      * answers {@code diawars:image_req} requests with chunked
      * {@code diawars:image_data} documents, which {@link ImageDownloader}
-     * reassembles and swaps into map rendering.
+     * reassembles and swaps into map rendering. Upload offers
+     * ({@code diawars:image_offer}) are answered with
+     * {@code diawars:image_accept} on the same channel.
      */
     private static final Channel<CustomPacketPayload> DATA_CHANNEL = ChannelBuilder
             .named(Identifier.fromNamespaceAndPath(MOD_ID, "image_data"))
@@ -89,6 +98,12 @@ public final class DiawarsClientForge {
                     ImageDataPayload.CODEC,
                     (payload, context) -> context.enqueueWork(() ->
                             ImageDownloader.handleDataJson(Minecraft.getInstance(), payload.json()))
+            )
+            .add(
+                    ImageAcceptPayload.TYPE,
+                    ImageAcceptPayload.CODEC,
+                    (payload, context) -> context.enqueueWork(() ->
+                            ImageUploader.handleAccept(payload.json()))
             )
             .build();
 
@@ -118,6 +133,13 @@ public final class DiawarsClientForge {
                 return false;
             }
             sendImageRequest(json);
+            return true;
+        });
+        ImageUploader.initOfferSender(json -> {
+            if (!canSendImages()) {
+                return false;
+            }
+            sendImageOffer(json);
             return true;
         });
     }
@@ -165,6 +187,19 @@ public final class DiawarsClientForge {
         }
     }
 
+    /** Sends one {@code diawars:image_offer} document over the current connection. */
+    public static void sendImageOffer(String json) {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return;
+            }
+            CHANNEL.send(new ImageOfferPayload(json), minecraft.getConnection().getConnection());
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars image offer packet.", e);
+        }
+    }
+
     /** Whether image chunks can currently be sent (connected to a server). */
     public static boolean canSendImages() {
         try {
@@ -206,6 +241,7 @@ public final class DiawarsClientForge {
                 }
             }
             ImageDownloader.tick(Minecraft.getInstance());
+            ImageUploader.tickOffer();
             if (ImageUploader.hasQueued() && canSendImages()) {
                 int sent = 0;
                 while (sent < 8 && ImageUploader.hasQueued()) {

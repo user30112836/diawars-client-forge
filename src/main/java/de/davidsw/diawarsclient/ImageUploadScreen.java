@@ -153,12 +153,20 @@ public class ImageUploadScreen extends Screen {
             this.lastSelectedFile = null;
         }
 
-        if (ImageUploader.hasQueued()) {
+        if (ImageUploader.isWaitingForAccept()) {
+            this.wasSending = true;
+            this.setStatus("Warte auf Server ... (Umfang wird vereinbart)", ChatFormatting.YELLOW);
+        } else if (ImageUploader.hasQueued()) {
             this.wasSending = true;
             this.setStatus("Sende ... (" + ImageUploader.queuedCount() + " Teile übrig)", ChatFormatting.YELLOW);
         } else if (this.wasSending) {
             this.wasSending = false;
             this.setStatus("Fertig! Die Antwort des Servers kommt im Chat.", ChatFormatting.GREEN);
+        }
+        String offerError = ImageUploader.consumeOfferError();
+        if (offerError != null) {
+            this.wasSending = false;
+            this.setStatus("Fehler: " + offerError, ChatFormatting.RED);
         }
     }
 

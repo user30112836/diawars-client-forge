@@ -281,7 +281,15 @@ public class ImageCropScreen extends Screen {
             this.infoLine.setMessage(Component.literal("Fehler: " + e.getMessage()).withStyle(ChatFormatting.RED));
             return;
         }
-        ImageUploader.enqueue(upload.chunks());
+        // The offer handshake agrees the part count with the server first;
+        // chunks queue up once the server accepts (shown in the upload screen).
+        if (!ImageUploader.requestUpload(upload)) {
+            String error = ImageUploader.consumeOfferError();
+            this.lastInfo = "";
+            this.infoLine.setMessage(Component.literal("Fehler: " + (error != null ? error : "Upload bereits aktiv."))
+                    .withStyle(ChatFormatting.RED));
+            return;
+        }
         this.minecraft.setScreenAndShow(new ImageUploadScreen());
     }
 

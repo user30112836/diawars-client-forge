@@ -85,7 +85,11 @@ public final class ImageUploader {
     public record PreparedUpload(String fileName, List<String> chunks, long bytes, String hash) {
     }
 
-    /** Square crop area in source image pixels. */
+    /**
+     * Square crop area in source image pixels. May extend beyond the image
+     * (negative {@code x}/{@code y} or {@code size} larger than a dimension);
+     * pixels outside the image become transparent.
+     */
     public record CropArea(int x, int y, int size) {
     }
 
@@ -453,7 +457,8 @@ public final class ImageUploader {
     private static BufferedImage scale(BufferedImage image, double factor) {
         int width = Math.max(1, (int) Math.round(image.getWidth() * factor));
         int height = Math.max(1, (int) Math.round(image.getHeight() * factor));
-        BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        int type = image.getColorModel().hasAlpha() ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+        BufferedImage out = new BufferedImage(width, height, type);
         Graphics2D g = out.createGraphics();
         try {
             g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
@@ -472,22 +477,38 @@ public final class ImageUploader {
         return out.size();
     }
 
-    /** Cuts the square crop area out of the image (clamped to the bounds). */
+    /**
+     * Cuts the square crop area out of the image. A crop fully inside the
+     * image stays opaque; a crop that extends beyond it is padded with
+     * transparent pixels, so the whole image can be fitted into a square
+     * selection without cutting anything off.
+     */
     private static BufferedImage applyCrop(BufferedImage image, CropArea crop) throws IOException {
-        int size = Math.min(crop.size(), Math.min(image.getWidth(), image.getHeight()));
+        int size = crop.size();
         if (size < 1) {
             throw new IOException("Ungültiger Bildausschnitt.");
         }
-        int x = Math.max(0, Math.min(crop.x(), image.getWidth() - size));
-        int y = Math.max(0, Math.min(crop.y(), image.getHeight() - size));
-        BufferedImage sub = image.getSubimage(x, y, size, size);
-        BufferedImage copy = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = copy.createGraphics();
+        boolean insideImage = crop.x() >= 0 && crop.y() >= 0
+                && crop.x() + (long) size <= image.getWidth()
+                && crop.y() + (long) size <= image.getHeight();
+        if (insideImage) {
+            BufferedImage sub = image.getSubimage(crop.x(), crop.y(), size, size);
+            BufferedImage copy = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = copy.createGraphics();
+            try {
+                g.drawImage(sub, 0, 0, null);
+            } finally {
+                g.dispose();
+            }
+            return copy;
+        }
+        BufferedImage padded = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = padded.createGraphics();
         try {
-            g.drawImage(sub, 0, 0, null);
+            g.drawImage(image, -crop.x(), -crop.y(), null);
         } finally {
             g.dispose();
         }
-        return copy;
+        return padded;
     }
 }

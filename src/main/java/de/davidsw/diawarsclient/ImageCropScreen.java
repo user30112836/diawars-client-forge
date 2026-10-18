@@ -22,8 +22,11 @@ import javax.imageio.ImageIO;
 /**
  * Second upload step: shows the image and lets the player pick the square
  * area to upload. Drag inside the preview to move the square, use the mouse
- * wheel over the preview to change its size. Confirming crops the area and
- * queues the upload at full resolution (see {@link ImageUploader}).
+ * wheel over the preview to change its size. The selection may grow to the
+ * whole square canvas ("Ganzes Bild"), so the entire image fits without
+ * cutting anything off; pixels outside the image become transparent.
+ * Confirming crops the area and queues the upload at full resolution
+ * (see {@link ImageUploader}).
  */
 public class ImageCropScreen extends Screen {
     private static final Identifier PREVIEW_ID =
@@ -36,6 +39,7 @@ public class ImageCropScreen extends Screen {
     private DynamicTexture previewTexture;
     private int imageWidth;
     private int imageHeight;
+    private int canvasSide;
     private String loadError;
 
     private int selX;
@@ -69,12 +73,12 @@ public class ImageCropScreen extends Screen {
                 Component.literal(savedInfo), this.font);
         this.addRenderableWidget(this.infoLine);
         this.addRenderableWidget(new StringWidget(20, this.height - 74, this.width - 40, 12,
-                Component.literal("Ziehen: Auswahl verschieben · Mausrad / − / +: Größe ändern"), this.font));
+                Component.literal("Ziehen: verschieben · Mausrad / − / +: Größe · Ganzes Bild: transparent auffüllen"), this.font));
 
         int smallWidth = 44;
         int buttonWidth = 110;
         int gap = 8;
-        int rowWidth = smallWidth * 2 + buttonWidth * 2 + gap * 3;
+        int rowWidth = smallWidth * 2 + buttonWidth * 3 + gap * 4;
         int buttonX = (this.width - rowWidth) / 2;
         int buttonY = this.height - 30;
         this.minusButton = Button.builder(Component.literal("−"),
@@ -83,12 +87,15 @@ public class ImageCropScreen extends Screen {
         this.plusButton = Button.builder(Component.literal("+"),
                 button -> this.resizeBy(1)).bounds(buttonX + smallWidth + gap, buttonY, smallWidth, 20).build();
         this.addRenderableWidget(this.plusButton);
+        this.addRenderableWidget(Button.builder(Component.literal("Ganzes Bild"),
+                button -> this.fitWholeImage())
+                .bounds(buttonX + (smallWidth + gap) * 2, buttonY, buttonWidth, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("Zurück"),
                 button -> this.minecraft.setScreenAndShow(new ImageUploadScreen()))
-                .bounds(buttonX + (smallWidth + gap) * 2, buttonY, buttonWidth, 20).build());
+                .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, buttonWidth, 20).build());
         this.confirmButton = Button.builder(Component.literal("Hochladen"),
                 button -> this.onConfirm())
-                .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, buttonWidth, 20).build();
+                .bounds(buttonX + (smallWidth + gap) * 2 + (buttonWidth + gap) * 2, buttonY, buttonWidth, 20).build();
         this.addRenderableWidget(this.confirmButton);
     }
 
@@ -138,10 +145,15 @@ public class ImageCropScreen extends Screen {
         this.previewTexture = new DynamicTexture(() -> "diawars crop preview", image);
         this.minecraft.getTextureManager().register(PREVIEW_ID, this.previewTexture);
 
+        // The selectable canvas is the smallest square that fits the whole
+        // image; the image is centred inside it. Anything the selection covers
+        // outside the image becomes transparent, so the whole image can be
+        // fitted without cutting it off.
+        this.canvasSide = Math.max(this.imageWidth, this.imageHeight);
         int size = Math.min(this.imageWidth, this.imageHeight);
         this.selSize = size;
-        this.selX = (this.imageWidth - size) / 2;
-        this.selY = (this.imageHeight - size) / 2;
+        this.selX = (this.canvasSide - size) / 2;
+        this.selY = (this.canvasSide - size) / 2;
     }
 
     @Override
@@ -186,30 +198,48 @@ public class ImageCropScreen extends Screen {
             return;
         }
 
+        int drawX = this.previewX();
+        int drawY = this.previewY();
         int drawW = this.previewDrawW();
         int drawH = this.previewDrawH();
-        int drawX = (this.width - drawW) / 2;
-        int drawY = 30 + (((this.height - 96) - 30) - drawH) / 2;
-
-        // Full texture scaled into the quad: sample the whole image.
-        extractor.blit(RenderPipelines.GUI_TEXTURED, PREVIEW_ID,
-                drawX, drawY, 0.0F, 0.0F, drawW, drawH,
-                this.imageWidth, this.imageHeight, this.imageWidth, this.imageHeight);
-
         double scale = this.previewScale();
 
-        int sx0 = drawX + (int) (this.selX * scale);
-        int sy0 = drawY + (int) (this.selY * scale);
-        int sx1 = drawX + (int) ((this.selX + this.selSize) * scale);
-        int sy1 = drawY + (int) ((this.selY + this.selSize) * scale);
+        // Canvas background: stands in for the transparent padding around the
+        // image (anything outside the image in the selection uploads as
+        // transparent).
+        extractor.fill(drawX, drawY, drawX + drawW, drawY + drawH, 0xFF1E1E1E);
+
+        // Image drawn inside the canvas at its centred offset.
+        int imgX = drawX + (int) Math.round(this.imageOffsetX() * scale);
+        int imgY = drawY + (int) Math.round(this.imageOffsetY() * scale);
+        int imgW = Math.max(1, (int) Math.round(this.imageWidth * scale));
+        int imgH = Math.max(1, (int) Math.round(this.imageHeight * scale));
+        extractor.blit(RenderPipelines.GUI_TEXTURED, PREVIEW_ID,
+                imgX, imgY, 0.0F, 0.0F, imgW, imgH,
+                this.imageWidth, this.imageHeight, this.imageWidth, this.imageHeight);
+
+        int sx0 = drawX + (int) Math.round(this.selX * scale);
+        int sy0 = drawY + (int) Math.round(this.selY * scale);
+        int sx1 = drawX + (int) Math.round((this.selX + this.selSize) * scale);
+        int sy1 = drawY + (int) Math.round((this.selY + this.selSize) * scale);
 
         int dim = 0x80000000;
-        extractor.fill(drawX, drawY, drawX + drawW, sy0, dim);
-        extractor.fill(drawX, sy1, drawX + drawW, drawY + drawH, dim);
-        extractor.fill(drawX, sy0, sx0, sy1, dim);
-        extractor.fill(sx1, sy0, drawX + drawW, sy1, dim);
+        if (sy0 > drawY) {
+            extractor.fill(drawX, drawY, drawX + drawW, sy0, dim);
+        }
+        if (sy1 < drawY + drawH) {
+            extractor.fill(drawX, sy1, drawX + drawW, drawY + drawH, dim);
+        }
+        if (sx0 > drawX) {
+            extractor.fill(drawX, sy0, sx0, sy1, dim);
+        }
+        if (sx1 < drawX + drawW) {
+            extractor.fill(sx1, sy0, drawX + drawW, sy1, dim);
+        }
         // NOTE: outline takes x/y plus width/height (not two corners).
         extractor.outline(sx0, sy0, sx1 - sx0, sy1 - sy0, 0xFFFFFFFF);
+        // Canvas border marks the bounds of the (square) upload.
+        extractor.outline(drawX, drawY, drawW, drawH, 0xFF808080);
     }
 
     @Override
@@ -220,14 +250,14 @@ public class ImageCropScreen extends Screen {
     @Override
     public boolean mouseClicked(MouseButtonEvent event, boolean doubleClicked) {
         if (event.button() == 0 && this.previewTexture != null && this.inPreview(event.x(), event.y())) {
-            double imageX = (event.x() - this.previewX()) / this.previewScale();
-            double imageY = (event.y() - this.previewY()) / this.previewScale();
-            if (imageX < this.selX || imageX >= this.selX + this.selSize
-                    || imageY < this.selY || imageY >= this.selY + this.selSize) {
-                this.centerOn(imageX, imageY);
+            double canvasX = (event.x() - this.previewX()) / this.previewScale();
+            double canvasY = (event.y() - this.previewY()) / this.previewScale();
+            if (canvasX < this.selX || canvasX >= this.selX + this.selSize
+                    || canvasY < this.selY || canvasY >= this.selY + this.selSize) {
+                this.centerOn(canvasX, canvasY);
             }
-            this.grabDX = imageX - this.selX;
-            this.grabDY = imageY - this.selY;
+            this.grabDX = canvasX - this.selX;
+            this.grabDY = canvasY - this.selY;
             this.dragging = true;
         }
         return super.mouseClicked(event, doubleClicked);
@@ -236,10 +266,10 @@ public class ImageCropScreen extends Screen {
     @Override
     public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
         if (this.dragging && this.previewTexture != null) {
-            double imageX = (event.x() - this.previewX()) / this.previewScale();
-            double imageY = (event.y() - this.previewY()) / this.previewScale();
-            this.selX = clamp(Math.round(imageX - this.grabDX), 0, this.imageWidth - this.selSize);
-            this.selY = clamp(Math.round(imageY - this.grabDY), 0, this.imageHeight - this.selSize);
+            double canvasX = (event.x() - this.previewX()) / this.previewScale();
+            double canvasY = (event.y() - this.previewY()) / this.previewScale();
+            this.selX = clamp(Math.round(canvasX - this.grabDX), 0, this.canvasSide - this.selSize);
+            this.selY = clamp(Math.round(canvasY - this.grabDY), 0, this.canvasSide - this.selSize);
         }
         return super.mouseDragged(event, dragX, dragY);
     }
@@ -259,23 +289,39 @@ public class ImageCropScreen extends Screen {
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
-    /** Grows (dir > 0) or shrinks the selection square. */
+    /** Grows (dir > 0) or shrinks the selection square around its centre. */
     private void resizeBy(int dir) {
         if (this.previewTexture == null) {
             return;
         }
         int step = Math.max(8, this.selSize / 8);
-        int maxSize = Math.min(this.imageWidth, this.imageHeight);
-        this.selSize = clamp(this.selSize + dir * step, MIN_SIZE, maxSize);
-        this.selX = clamp(this.selX, 0, this.imageWidth - this.selSize);
-        this.selY = clamp(this.selY, 0, this.imageHeight - this.selSize);
+        int newSize = clamp(this.selSize + dir * step, MIN_SIZE, this.canvasSide);
+        if (newSize == this.selSize) {
+            return;
+        }
+        int centerX = this.selX + this.selSize / 2;
+        int centerY = this.selY + this.selSize / 2;
+        this.selSize = newSize;
+        this.selX = clamp(centerX - newSize / 2, 0, this.canvasSide - newSize);
+        this.selY = clamp(centerY - newSize / 2, 0, this.canvasSide - newSize);
+    }
+
+    /** Selects the whole canvas: the entire image plus transparent padding. */
+    private void fitWholeImage() {
+        if (this.previewTexture == null) {
+            return;
+        }
+        this.selSize = this.canvasSide;
+        this.selX = 0;
+        this.selY = 0;
     }
 
     private void onConfirm() {
         ImageUploader.PreparedUpload upload;
         try {
             upload = ImageUploader.prepare(this.sourceFile, this.uploadName,
-                    new ImageUploader.CropArea(this.selX, this.selY, this.selSize));
+                    new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
+                            this.selY - this.imageOffsetY(), this.selSize));
         } catch (Exception e) {
             this.lastInfo = "";
             this.infoLine.setMessage(Component.literal("Fehler: " + e.getMessage()).withStyle(ChatFormatting.RED));
@@ -293,18 +339,28 @@ public class ImageCropScreen extends Screen {
         this.minecraft.setScreenAndShow(new ImageUploadScreen());
     }
 
+    /** Horizontal offset of the image inside the square canvas. */
+    private int imageOffsetX() {
+        return (this.canvasSide - this.imageWidth) / 2;
+    }
+
+    /** Vertical offset of the image inside the square canvas. */
+    private int imageOffsetY() {
+        return (this.canvasSide - this.imageHeight) / 2;
+    }
+
     private double previewScale() {
         int availW = this.width - 40;
         int availH = (this.height - 96) - 30;
-        return Math.min((double) availW / this.imageWidth, (double) availH / this.imageHeight);
+        return Math.min((double) availW / this.canvasSide, (double) availH / this.canvasSide);
     }
 
     private int previewDrawW() {
-        return Math.max(1, (int) (this.imageWidth * this.previewScale()));
+        return Math.max(1, (int) Math.round(this.canvasSide * this.previewScale()));
     }
 
     private int previewDrawH() {
-        return Math.max(1, (int) (this.imageHeight * this.previewScale()));
+        return this.previewDrawW();
     }
 
     private int previewX() {
@@ -320,12 +376,12 @@ public class ImageCropScreen extends Screen {
         int drawH = this.previewDrawH();
         int drawX = this.previewX();
         int drawY = this.previewY();
-        return mouseX >= drawX && mouseX < drawX + drawW && mouseY >= drawY && mouseY < drawH + drawY;
+        return mouseX >= drawX && mouseX < drawX + drawW && mouseY >= drawY && mouseY < drawY + drawH;
     }
 
-    private void centerOn(double imageX, double imageY) {
-        this.selX = clamp(Math.round(imageX - this.selSize / 2.0), 0, this.imageWidth - this.selSize);
-        this.selY = clamp(Math.round(imageY - this.selSize / 2.0), 0, this.imageHeight - this.selSize);
+    private void centerOn(double canvasX, double canvasY) {
+        this.selX = clamp(Math.round(canvasX - this.selSize / 2.0), 0, this.canvasSide - this.selSize);
+        this.selY = clamp(Math.round(canvasY - this.selSize / 2.0), 0, this.canvasSide - this.selSize);
     }
 
     private static int clamp(long value, int min, int max) {

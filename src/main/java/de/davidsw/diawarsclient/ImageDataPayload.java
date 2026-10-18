@@ -17,9 +17,11 @@ import org.jspecify.annotations.NonNull;
  * {@code {"mapId": 123, "owner": "<uuid>", "file": "<name>", "hash": "<sha256>",
  * "part": 0, "total": N, "data": "<base64>"}}; control singles are
  * {@code {"mapId": ..., "unchanged": true}} (client cache is fresh),
- * {@code {"mapId": ..., "error": "unknown"|"too-big"}} or
+ * {@code {"mapId": ..., "error": "unknown"|"too-big"}},
  * {@code {"deleted": true, "owner": "<uuid>", "file": "<name>"}} (admin
- * deleted the image: drop the cached copy).</p>
+ * deleted the image or banned its owner: drop the cached copy) or
+ * {@code {"refresh": true}} (ban lifted: forget negative marks and
+ * re-request images).</p>
  */
 public record ImageDataPayload(String json) implements CustomPacketPayload {
     public static final CustomPacketPayload.Type<ImageDataPayload> TYPE =

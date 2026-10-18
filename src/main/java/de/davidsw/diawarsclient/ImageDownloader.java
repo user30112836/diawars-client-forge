@@ -189,6 +189,14 @@ public final class ImageDownloader {
         String hash = root.has("hash") && root.get("hash").isJsonPrimitive()
                 ? root.get("hash").getAsString() : null;
 
+        if (root.has("refresh") && root.get("refresh").isJsonPrimitive()
+                && root.get("refresh").getAsBoolean()) {
+            // Server state changed (e.g. a ban was lifted): forget negative and
+            // deleted marks so the scanner re-requests those images.
+            NEGATIVE.clear();
+            DELETED.clear();
+            return;
+        }
         if (root.has("deleted") && root.get("deleted").isJsonPrimitive()
                 && root.get("deleted").getAsBoolean()) {
             // Admin deleted the image: drop the cached copy and every texture

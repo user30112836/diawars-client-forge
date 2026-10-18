@@ -87,6 +87,8 @@ public final class ImageDownloader {
     private static final Map<Integer, FullTexture> TEXTURES = new HashMap<>();
     private static final Map<Integer, Long> PENDING = new HashMap<>();
     private static final Map<Integer, Long> NEGATIVE = new HashMap<>();
+    /** Map ids whose image the server deleted: never requested again this session. */
+    private static final Set<Integer> DELETED = new HashSet<>();
     private static int tickCounter;
     private static long lastPrune;
 
@@ -144,7 +146,7 @@ public final class ImageDownloader {
 
     /** Requests the full image for a map id unless cached, pending or recently failed. */
     public static void ensureMap(Minecraft minecraft, int mapId) {
-        if (TEXTURES.containsKey(mapId) || sender == null) {
+        if (TEXTURES.containsKey(mapId) || DELETED.contains(mapId) || sender == null) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -187,11 +189,25 @@ public final class ImageDownloader {
         String hash = root.has("hash") && root.get("hash").isJsonPrimitive()
                 ? root.get("hash").getAsString() : null;
 
+        if (root.has("deleted") && root.get("deleted").isJsonPrimitive()
+                && root.get("deleted").getAsBoolean()) {
+            // Admin deleted the image: drop the cached copy and every texture
+            // that was built from it. Missing file means the whole owner.
+            if (owner != null) {
+                purgeCachedImage(minecraft, owner, file);
+            }
+            return;
+        }
         if (root.has("error")) {
+            String reason = root.get("error").isJsonPrimitive() ? root.get("error").getAsString() : "";
             if (mapId != null) {
                 PENDING.remove(mapId);
                 NEGATIVE.put(mapId, System.currentTimeMillis());
                 deleteIndex(minecraft, mapId);
+            }
+            if ("unknown".equals(reason) && owner != null) {
+                // The image is gone server-side: don't keep a stale copy.
+                purgeCachedImage(minecraft, owner, file);
             }
             return;
         }
@@ -302,6 +318,7 @@ public final class ImageDownloader {
         SESSIONS.clear();
         PENDING.clear();
         NEGATIVE.clear();
+        DELETED.clear();
         for (FullTexture full : TEXTURES.values()) {
             try {
                 minecraft.getTextureManager().release(full.id());
@@ -311,6 +328,84 @@ public final class ImageDownloader {
             }
         }
         TEXTURES.clear();
+    }
+
+    /**
+     * Removes the cached copy of an image (all of an owner's files when
+     * {@code file} is null), releases the textures built from it and remembers
+     * the affected map ids so they are not requested again this session.
+     */
+    private static void purgeCachedImage(Minecraft minecraft, String owner, String file) {
+        if (file == null) {
+            File ownerDir = new File(cacheDir(minecraft), owner);
+            File[] files = ownerDir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.isFile()) {
+                        f.delete();
+                    }
+                }
+            }
+        } else {
+            try {
+                Files.deleteIfExists(imageFile(minecraft, owner, file).toPath());
+            } catch (IOException e) {
+                LOGGER.warn("Could not delete cached diawars image {}/{}.", owner, file, e);
+            }
+            try {
+                Files.deleteIfExists(hashFile(minecraft, owner, file).toPath());
+            } catch (IOException e) {
+                LOGGER.warn("Could not delete cached diawars hash {}/{}.", owner, file, e);
+            }
+        }
+
+        File indexDir = new File(cacheDir(minecraft), "index");
+        File[] links = indexDir.listFiles();
+        if (links == null) {
+            return;
+        }
+        String prefix = owner + "/";
+        String wanted = file == null ? null : owner + "/" + file;
+        for (File link : links) {
+            String linked;
+            try {
+                linked = Files.readString(link.toPath(), StandardCharsets.UTF_8).trim();
+            } catch (IOException e) {
+                continue;
+            }
+            if (wanted != null ? !linked.equals(wanted) : !linked.startsWith(prefix)) {
+                continue;
+            }
+            int mapId;
+            try {
+                mapId = Integer.parseInt(link.getName());
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            try {
+                Files.deleteIfExists(link.toPath());
+            } catch (IOException e) {
+                LOGGER.warn("Could not delete diawars map index {}.", link.getName(), e);
+            }
+            dropTexture(minecraft, mapId);
+            SESSIONS.values().removeIf(session -> session.mapId() != null && session.mapId() == mapId);
+            PENDING.remove(mapId);
+            NEGATIVE.put(mapId, System.currentTimeMillis());
+            DELETED.add(mapId);
+        }
+    }
+
+    private static void dropTexture(Minecraft minecraft, int mapId) {
+        FullTexture old = TEXTURES.remove(mapId);
+        if (old == null) {
+            return;
+        }
+        try {
+            minecraft.getTextureManager().release(old.id());
+            old.texture().close();
+        } catch (Exception e) {
+            LOGGER.warn("Failed to release diawars map texture.", e);
+        }
     }
 
     // ------------------------------------------------------------------

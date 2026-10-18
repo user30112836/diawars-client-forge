@@ -16,8 +16,10 @@ import org.jspecify.annotations.NonNull;
  * per chunk. Data chunks look like
  * {@code {"mapId": 123, "owner": "<uuid>", "file": "<name>", "hash": "<sha256>",
  * "part": 0, "total": N, "data": "<base64>"}}; control singles are
- * {@code {"mapId": ..., "unchanged": true}} (client cache is fresh) or
- * {@code {"mapId": ..., "error": "unknown"|"too-big"}}.</p>
+ * {@code {"mapId": ..., "unchanged": true}} (client cache is fresh),
+ * {@code {"mapId": ..., "error": "unknown"|"too-big"}} or
+ * {@code {"deleted": true, "owner": "<uuid>", "file": "<name>"}} (admin
+ * deleted the image: drop the cached copy).</p>
  */
 public record ImageDataPayload(String json) implements CustomPacketPayload {
     public static final CustomPacketPayload.Type<ImageDataPayload> TYPE =

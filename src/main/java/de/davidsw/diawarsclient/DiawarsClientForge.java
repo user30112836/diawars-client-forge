@@ -126,6 +126,27 @@ public final class DiawarsClientForge {
             )
             .build();
 
+    /**
+     * Clientbound channel for the {@code diawars:text_input} signal: the
+     * server sends it when the player clicks a menu entry that needs typed
+     * input (bug report, vault invite/remove, event creation), and the mod
+     * opens the text input dialog on the next client tick (see
+     * {@link TextInputScreen}).
+     */
+    private static final Channel<CustomPacketPayload> TEXT_INPUT_CHANNEL = ChannelBuilder
+            .named(Identifier.fromNamespaceAndPath(MOD_ID, "text_input"))
+            .optional()
+            .networkProtocolVersion(1)
+            .payloadChannel()
+            .protocol(NetworkProtocol.PLAY)
+            .flow(PacketFlow.CLIENTBOUND)
+            .add(
+                    TextInputPayload.TYPE,
+                    TextInputPayload.CODEC,
+                    (payload, context) -> pendingTextInputJson = payload.json()
+            )
+            .build();
+
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
         LOGGER.info("Diawars Client (Forge) initialized.");
         ImageDownloader.init(json -> {
@@ -160,6 +181,12 @@ public final class DiawarsClientForge {
      * because screen changes must not happen inside network handling.
      */
     public static volatile boolean pendingOpenUploadScreen;
+
+    /**
+     * JSON of the latest {@code diawars:text_input} dialog request; parsed and
+     * opened on the next client tick, see {@link TextInputScreen}.
+     */
+    public static volatile String pendingTextInputJson;
 
     /** Sends one prepared {@code diawars:image} chunk over the current connection. */
     public static void sendImage(String json) {
@@ -238,6 +265,14 @@ public final class DiawarsClientForge {
                 Minecraft minecraft = Minecraft.getInstance();
                 if (minecraft.player != null) {
                     minecraft.setScreenAndShow(new ImageUploadScreen());
+                }
+            }
+            String pendingTextInput = pendingTextInputJson;
+            if (pendingTextInput != null) {
+                pendingTextInputJson = null;
+                TextInputScreen textInputScreen = TextInputScreen.parseOrNull(pendingTextInput);
+                if (textInputScreen != null && Minecraft.getInstance().player != null) {
+                    Minecraft.getInstance().setScreenAndShow(textInputScreen);
                 }
             }
             ImageDownloader.tick(Minecraft.getInstance());

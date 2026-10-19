@@ -32,6 +32,15 @@ immer das Bild in Originalqualität. Die Antwort kommt im
 Chat; mit `/image get <datei>` oder über das Bilder-Menü erhältst du
 die Karte.
 
+## Eingabe-Dialoge
+
+Fragt der Server nach einer Eingabe (z. B. Bug-Beschreibung, Spielername
+beim Vault, Eventname), öffnet die Mod automatisch einen Eingabe-Dialog
+(`diawars:text_input`, JSON mit Befehlspräfix, Titel, Beschriftung, Hinweis
+und Maximal-Länge). Mit "Senden" oder Enter läuft der Text dann durch die
+Mod direkt als Befehl weiter (`sendCommand`), genau als hätte der Spieler
+den Befehl selbst im Chat getippt.
+
 ## Build
 
 ```bash

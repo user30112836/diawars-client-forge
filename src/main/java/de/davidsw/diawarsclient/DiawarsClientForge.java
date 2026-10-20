@@ -77,6 +77,13 @@ public final class DiawarsClientForge {
                         // Client never receives image offers; only sends them.
                     }
             )
+            .add(
+                    ReportSubmitPayload.TYPE,
+                    ReportSubmitPayload.CODEC,
+                    (payload, context) -> {
+                        // Client never receives report submits; only sends them.
+                    }
+            )
             .build();
 
     /**
@@ -168,6 +175,26 @@ public final class DiawarsClientForge {
             )
             .build();
 
+    /**
+     * Clientbound channel for the {@code diawars:report_dialog} signal: the
+     * server sends it when the player clicks the "Melden" main-menu button,
+     * and the mod opens the report dialog on the next client tick (see
+     * {@link ReportDialogScreen}).
+     */
+    private static final Channel<CustomPacketPayload> REPORT_DIALOG_CHANNEL = ChannelBuilder
+            .named(Identifier.fromNamespaceAndPath(MOD_ID, "report_dialog"))
+            .optional()
+            .networkProtocolVersion(1)
+            .payloadChannel()
+            .protocol(NetworkProtocol.PLAY)
+            .flow(PacketFlow.CLIENTBOUND)
+            .add(
+                    ReportDialogPayload.TYPE,
+                    ReportDialogPayload.CODEC,
+                    (payload, context) -> pendingReportDialogJson = payload.json()
+            )
+            .build();
+
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
         LOGGER.info("Diawars Client (Forge) initialized.");
         ImageDownloader.init(json -> {
@@ -187,6 +214,12 @@ public final class DiawarsClientForge {
         // Report screenshots upload without a screen; failures go to chat.
         ImageUploader.initErrorFeedback(message -> Minecraft.getInstance().execute(() ->
                 Minecraft.getInstance().showDebugChat(Component.literal(message))));
+        ReportDialogScreen.initSubmitSender(json -> {
+            if (!canSendImages()) {
+                return false;
+            }
+            return sendReportSubmit(json);
+        });
     }
 
     public static void sendClientInfo(net.minecraft.network.Connection connection) {
@@ -218,6 +251,12 @@ public final class DiawarsClientForge {
      * {@link ReportScreenshot}.
      */
     public static volatile String pendingScreenshotJson;
+
+    /**
+     * JSON of the latest {@code diawars:report_dialog} dialog request; parsed
+     * and opened on the next client tick, see {@link ReportDialogScreen}.
+     */
+    public static volatile String pendingReportDialogJson;
 
     /** Sends one prepared {@code diawars:image} chunk over the current connection. */
     public static void sendImage(String json) {
@@ -255,6 +294,21 @@ public final class DiawarsClientForge {
             CHANNEL.send(new ImageOfferPayload(json), minecraft.getConnection().getConnection());
         } catch (Exception | LinkageError e) {
             LOGGER.warn("Failed to send diawars image offer packet.", e);
+        }
+    }
+
+    /** Sends one {@code diawars:report_submit} document over the current connection. */
+    public static boolean sendReportSubmit(String json) {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return false;
+            }
+            CHANNEL.send(new ReportSubmitPayload(json), minecraft.getConnection().getConnection());
+            return true;
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars report submit packet.", e);
+            return false;
         }
     }
 
@@ -306,12 +360,26 @@ public final class DiawarsClientForge {
                     Minecraft.getInstance().setScreenAndShow(textInputScreen);
                 }
             }
+            String pendingReportDialog = pendingReportDialogJson;
+            if (pendingReportDialog != null) {
+                pendingReportDialogJson = null;
+                ReportDialogScreen reportDialogScreen = ReportDialogScreen.parseOrNull(pendingReportDialog);
+                if (reportDialogScreen != null && Minecraft.getInstance().player != null) {
+                    Minecraft.getInstance().setScreenAndShow(reportDialogScreen);
+                }
+            }
             String pendingScreenshot = pendingScreenshotJson;
             if (pendingScreenshot != null) {
-                pendingScreenshotJson = null;
                 Minecraft minecraft = Minecraft.getInstance();
-                if (minecraft.player != null && minecraft.getConnection() != null) {
-                    ReportScreenshot.handle(minecraft, pendingScreenshot);
+                if (minecraft.gui.screen() instanceof ReportDialogScreen) {
+                    // The dialog that requested the screenshot is still on
+                    // screen — wait so the capture shows the world, not the
+                    // submit overlay.
+                } else {
+                    pendingScreenshotJson = null;
+                    if (minecraft.player != null && minecraft.getConnection() != null) {
+                        ReportScreenshot.handle(minecraft, pendingScreenshot);
+                    }
                 }
             }
             ImageDownloader.tick(Minecraft.getInstance());

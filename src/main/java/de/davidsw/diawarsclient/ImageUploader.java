@@ -82,7 +82,37 @@ public final class ImageUploader {
         offerSender = sender;
     }
 
-    public record PreparedUpload(String fileName, List<String> chunks, long bytes, String hash) {
+    /** Plain-text error sink for uploads without a screen (report screenshots). */
+    public interface ErrorFeedback {
+        void show(String message);
+    }
+
+    private static volatile ErrorFeedback errorFeedback;
+
+    public static void initErrorFeedback(ErrorFeedback sink) {
+        errorFeedback = sink;
+    }
+
+    /**
+     * Records an upload error: report-shot uploads go straight into chat
+     * (they have no screen to show it on), everything else lands in
+     * {@link #consumeOfferError()} like before.
+     */
+    private static void recordError(PreparedUpload upload, String message) {
+        if (upload != null && upload.report() != null) {
+            ErrorFeedback sink = errorFeedback;
+            if (sink != null) {
+                sink.show(message);
+                return;
+            }
+        }
+        offerError = message;
+    }
+
+    public record PreparedUpload(String fileName, List<String> chunks, long bytes, String hash, String report) {
+        public PreparedUpload(String fileName, List<String> chunks, long bytes, String hash) {
+            this(fileName, chunks, bytes, hash, null);
+        }
     }
 
     /**
@@ -277,7 +307,36 @@ public final class ImageUploader {
         if (crop != null) {
             image = applyCrop(image, crop);
         }
+        return encode(image, name, null);
+    }
 
+    /**
+     * Prepares a report screenshot upload from an already-captured PNG file
+     * (see {@link ReportScreenshot}): no name derivation, no crop — the file
+     * and name come from the server request ({@code report-<id>}). Chunks and
+     * offer are tagged with the report id so the server stores the image
+     * under the report instead of the player's gallery.
+     *
+     * @throws IOException              when the file cannot be read as an image
+     * @throws IllegalArgumentException when the upload name or report is invalid
+     */
+    public static PreparedUpload prepareShot(File pngFile, String wantedName, String report) throws IOException {
+        if (report == null || report.isBlank()) {
+            throw new IllegalArgumentException("Screenshot ohne Report-ID.");
+        }
+        String name = sanitize(wantedName);
+        if (name == null) {
+            throw new IllegalArgumentException("Ungültiger Screenshotname.");
+        }
+        BufferedImage image = ImageIO.read(pngFile);
+        if (image == null) {
+            throw new IOException("Screenshot ist kein lesbares Bild.");
+        }
+        return encode(image, name, report);
+    }
+
+    /** Fits, encodes and chunks an image; {@code report} tags report uploads. */
+    private static PreparedUpload encode(BufferedImage image, String name, String report) throws IOException {
         BufferedImage fitted = fitForUpload(image);
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -296,9 +355,12 @@ public final class ImageUploader {
             json.addProperty("part", i);
             json.addProperty("total", total);
             json.addProperty("data", part);
+            if (report != null) {
+                json.addProperty("report", report);
+            }
             chunks.add(GSON.toJson(json));
         }
-        return new PreparedUpload(name, chunks, png.length, sha256Hex(png));
+        return new PreparedUpload(name, chunks, png.length, sha256Hex(png), report);
     }
 
     /**
@@ -320,6 +382,9 @@ public final class ImageUploader {
         offer.addProperty("bytes", upload.bytes());
         offer.addProperty("total", upload.chunks().size());
         offer.addProperty("hash", upload.hash());
+        if (upload.report() != null) {
+            offer.addProperty("report", upload.report());
+        }
         if (!offerSender.sendOffer(GSON.toJson(offer))) {
             offerError = "Der Upload konnte nicht gestartet werden (keine Verbindung?).";
             return false;
@@ -357,17 +422,18 @@ public final class ImageUploader {
         } else {
             String error = root.has("error") && root.get("error").isJsonPrimitive()
                     ? root.get("error").getAsString() : "Der Server hat den Upload abgelehnt.";
-            // Server messages use MiniMessage tags; the screen shows plain text.
-            offerError = error.replaceAll("<[^>]*>", "");
+            // Server messages use MiniMessage tags; chat/screen shows plain text.
+            recordError(pending, error.replaceAll("<[^>]*>", ""));
         }
     }
 
     /** Fails a long-unanswered offer; call once per client tick. */
     public static void tickOffer() {
         if (waitingForAccept && System.currentTimeMillis() - offerSentAt > OFFER_TIMEOUT_MILLIS) {
+            PreparedUpload pending = pendingUpload;
             pendingUpload = null;
             waitingForAccept = false;
-            offerError = "Der Server antwortet nicht auf den Upload.";
+            recordError(pending, "Der Server antwortet nicht auf den Upload.");
         }
     }
 

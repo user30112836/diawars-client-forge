@@ -2,6 +2,7 @@ package de.davidsw.diawarsclient;
 
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.resources.Identifier;
 import net.minecraftforge.api.distmarker.Dist;
@@ -147,6 +148,26 @@ public final class DiawarsClientForge {
             )
             .build();
 
+    /**
+     * Clientbound channel for the {@code diawars:screenshot} signal: the
+     * server sends it when the reporter opts in via {@code /report shot}, and
+     * the mod captures the current frame and uploads it as a report
+     * attachment on the next client tick (see {@link ReportScreenshot}).
+     */
+    private static final Channel<CustomPacketPayload> SCREENSHOT_CHANNEL = ChannelBuilder
+            .named(Identifier.fromNamespaceAndPath(MOD_ID, "screenshot"))
+            .optional()
+            .networkProtocolVersion(1)
+            .payloadChannel()
+            .protocol(NetworkProtocol.PLAY)
+            .flow(PacketFlow.CLIENTBOUND)
+            .add(
+                    ScreenshotPayload.TYPE,
+                    ScreenshotPayload.CODEC,
+                    (payload, context) -> pendingScreenshotJson = payload.json()
+            )
+            .build();
+
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
         LOGGER.info("Diawars Client (Forge) initialized.");
         ImageDownloader.init(json -> {
@@ -163,6 +184,9 @@ public final class DiawarsClientForge {
             sendImageOffer(json);
             return true;
         });
+        // Report screenshots upload without a screen; failures go to chat.
+        ImageUploader.initErrorFeedback(message -> Minecraft.getInstance().execute(() ->
+                Minecraft.getInstance().showDebugChat(Component.literal(message))));
     }
 
     public static void sendClientInfo(net.minecraft.network.Connection connection) {
@@ -187,6 +211,13 @@ public final class DiawarsClientForge {
      * opened on the next client tick, see {@link TextInputScreen}.
      */
     public static volatile String pendingTextInputJson;
+
+    /**
+     * JSON of the latest {@code diawars:screenshot} request; handled on the
+     * next client tick because the capture must run on the render thread, see
+     * {@link ReportScreenshot}.
+     */
+    public static volatile String pendingScreenshotJson;
 
     /** Sends one prepared {@code diawars:image} chunk over the current connection. */
     public static void sendImage(String json) {
@@ -273,6 +304,14 @@ public final class DiawarsClientForge {
                 TextInputScreen textInputScreen = TextInputScreen.parseOrNull(pendingTextInput);
                 if (textInputScreen != null && Minecraft.getInstance().player != null) {
                     Minecraft.getInstance().setScreenAndShow(textInputScreen);
+                }
+            }
+            String pendingScreenshot = pendingScreenshotJson;
+            if (pendingScreenshot != null) {
+                pendingScreenshotJson = null;
+                Minecraft minecraft = Minecraft.getInstance();
+                if (minecraft.player != null && minecraft.getConnection() != null) {
+                    ReportScreenshot.handle(minecraft, pendingScreenshot);
                 }
             }
             ImageDownloader.tick(Minecraft.getInstance());

@@ -78,6 +78,13 @@ public final class DiawarsClientForge {
                     }
             )
             .add(
+                    ImageCheckPayload.TYPE,
+                    ImageCheckPayload.CODEC,
+                    (payload, context) -> {
+                        // Client never receives name checks; only sends them.
+                    }
+            )
+            .add(
                     ReportSubmitPayload.TYPE,
                     ReportSubmitPayload.CODEC,
                     (payload, context) -> {
@@ -92,7 +99,8 @@ public final class DiawarsClientForge {
      * {@code diawars:image_data} documents, which {@link ImageDownloader}
      * reassembles and swaps into map rendering. Upload offers
      * ({@code diawars:image_offer}) are answered with
-     * {@code diawars:image_accept} on the same channel.
+     * {@code diawars:image_accept} and split name checks with
+     * {@code diawars:image_check_ok} on the same channel.
      */
     private static final Channel<CustomPacketPayload> DATA_CHANNEL = ChannelBuilder
             .named(Identifier.fromNamespaceAndPath(MOD_ID, "image_data"))
@@ -112,6 +120,12 @@ public final class DiawarsClientForge {
                     ImageAcceptPayload.CODEC,
                     (payload, context) -> context.enqueueWork(() ->
                             ImageUploader.handleAccept(payload.json()))
+            )
+            .add(
+                    ImageCheckOkPayload.TYPE,
+                    ImageCheckOkPayload.CODEC,
+                    (payload, context) -> context.enqueueWork(() ->
+                            ImageUploader.handleCheckOk(payload.json()))
             )
             .build();
 
@@ -211,6 +225,12 @@ public final class DiawarsClientForge {
             sendImageOffer(json);
             return true;
         });
+        ImageUploader.initCheckSender(json -> {
+            if (!canSendImages()) {
+                return false;
+            }
+            return sendImageCheck(json);
+        });
         // Report screenshots upload without a screen; failures go to chat.
         ImageUploader.initErrorFeedback(message -> Minecraft.getInstance().execute(() ->
                 Minecraft.getInstance().showDebugChat(Component.literal(message))));
@@ -294,6 +314,21 @@ public final class DiawarsClientForge {
             CHANNEL.send(new ImageOfferPayload(json), minecraft.getConnection().getConnection());
         } catch (Exception | LinkageError e) {
             LOGGER.warn("Failed to send diawars image offer packet.", e);
+        }
+    }
+
+    /** Sends one {@code diawars:image_check} document over the current connection. */
+    public static boolean sendImageCheck(String json) {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return false;
+            }
+            CHANNEL.send(new ImageCheckPayload(json), minecraft.getConnection().getConnection());
+            return true;
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars image check packet.", e);
+            return false;
         }
     }
 
@@ -391,6 +426,7 @@ public final class DiawarsClientForge {
                     sent++;
                 }
             }
+            ImageUploader.tickBatch();
         }
     }
 }

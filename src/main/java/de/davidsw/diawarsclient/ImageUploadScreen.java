@@ -22,8 +22,10 @@ import java.util.List;
  * to the Diawars server as a chunked {@code diawars:image} payload. Files can
  * be chosen from the {@code diawars-images} folder inside the game directory
  * (refreshable list) or via an arbitrary path typed into the path field. The
- * upload name defaults to the file name and can be edited. Opened from the
- * server (images menu upload button, {@code /image upload}).</p>
+ * upload name defaults to the file name and can be edited. The "Aufteilen"
+ * option splits the chosen image into an N×N grid of smaller images, uploaded
+ * one by one with a {@code (k)} suffix on the name (see ImageCropScreen).
+ * Opened from the server (images menu upload button, {@code /image upload}).
  */
 public class ImageUploadScreen extends Screen {
     private static final int LIST_ITEM_HEIGHT = 20;
@@ -44,8 +46,18 @@ public class ImageUploadScreen extends Screen {
     private boolean applyingAutofill;
     private boolean wasSending;
 
+    /** Split option: the image uploads as an N×N grid (see ImageCropScreen). */
+    private boolean splitUploads;
+    private Button splitButton;
+
     public ImageUploadScreen() {
         super(Component.literal("Bilder hochladen"));
+    }
+
+    /** Upload screen with the split option pre-set (from the crop screen's Zurück). */
+    public ImageUploadScreen(boolean splitUploads) {
+        this();
+        this.splitUploads = splitUploads;
     }
 
     @Override
@@ -77,11 +89,11 @@ public class ImageUploadScreen extends Screen {
         this.addRenderableWidget(this.folderLabel);
 
         int listTop = 66;
-        int listBottom = this.height - 108;
+        int listBottom = this.height - 132;
         this.fileList = new FileList(this.minecraft, this.width, listBottom - listTop, listTop);
         this.addRenderableWidget(this.fileList);
 
-        int y = this.height - 100;
+        int y = this.height - 124;
         this.addRenderableWidget(new StringWidget(margin, y, this.width - margin * 2, 10,
                 Component.literal("Eigener Pfad (optional, sonst Auswahl aus der Liste):"), this.font));
         y += 12;
@@ -108,8 +120,12 @@ public class ImageUploadScreen extends Screen {
         });
         this.nameTouched = savedNameTouched;
         this.addRenderableWidget(this.nameField);
-        y += 20;
-        this.statusLine = new StringWidget(margin, y, this.width - margin * 2, 12,
+        y += 24;
+        this.splitButton = Button.builder(Component.literal(splitToggleLabel()),
+                button -> this.toggleSplit()).bounds(margin, y, 120, FIELD_HEIGHT).build();
+        this.addRenderableWidget(this.splitButton);
+        y += 24;
+        this.statusLine = new StringWidget(margin, y, this.width - margin * 2, 10,
                 Component.literal(""), this.font);
         this.addRenderableWidget(this.statusLine);
 
@@ -153,15 +169,25 @@ public class ImageUploadScreen extends Screen {
             this.lastSelectedFile = null;
         }
 
-        if (ImageUploader.isWaitingForAccept()) {
+        if (ImageUploader.isCheckingNames()) {
             this.wasSending = true;
-            this.setStatus("Warte auf Server ... (Umfang wird vereinbart)", ChatFormatting.YELLOW);
-        } else if (ImageUploader.hasQueued()) {
-            this.wasSending = true;
-            this.setStatus("Sende ... (" + ImageUploader.queuedCount() + " Teile übrig)", ChatFormatting.YELLOW);
-        } else if (this.wasSending) {
-            this.wasSending = false;
-            this.setStatus("Fertig! Die Antwort des Servers kommt im Chat.", ChatFormatting.GREEN);
+            this.setStatus("Prüfe Namen der Aufteilung ...", ChatFormatting.YELLOW);
+        } else {
+            int segments = ImageUploader.batchSegmentCount();
+            String batchSuffix = segments > 0 ? " (Teil " + ImageUploader.batchCurrentSegment() + "/" + segments + ")" : "";
+            if (ImageUploader.isWaitingForAccept()) {
+                this.wasSending = true;
+                this.setStatus("Warte auf Server ..." + (segments > 0 ? batchSuffix : " (Umfang wird vereinbart)"), ChatFormatting.YELLOW);
+            } else if (ImageUploader.hasQueued()) {
+                this.wasSending = true;
+                this.setStatus("Sende" + batchSuffix + " (" + ImageUploader.queuedCount() + " Teile übrig)", ChatFormatting.YELLOW);
+            } else if (segments > 0) {
+                this.wasSending = true;
+                this.setStatus("Sende" + batchSuffix + " ...", ChatFormatting.YELLOW);
+            } else if (this.wasSending) {
+                this.wasSending = false;
+                this.setStatus("Fertig! Die Antwort des Servers kommt im Chat.", ChatFormatting.GREEN);
+            }
         }
         String offerError = ImageUploader.consumeOfferError();
         if (offerError != null) {
@@ -205,6 +231,17 @@ public class ImageUploadScreen extends Screen {
         this.refreshList();
     }
 
+    private String splitToggleLabel() {
+        return this.splitUploads ? "Aufteilen: An" : "Aufteilen: Aus";
+    }
+
+    private void toggleSplit() {
+        this.splitUploads = !this.splitUploads;
+        if (this.splitButton != null) {
+            this.splitButton.setMessage(Component.literal(splitToggleLabel()));
+        }
+    }
+
     private void updateFolderButtons() {
         String current = this.folder.getAbsolutePath();
         this.gameFolderButton.active = !current.equals(ImageUploader.getFolder(this.minecraft).getAbsolutePath());
@@ -237,7 +274,7 @@ public class ImageUploadScreen extends Screen {
             return;
         }
 
-        this.minecraft.setScreenAndShow(new ImageCropScreen(source, effectiveName));
+        this.minecraft.setScreenAndShow(new ImageCropScreen(source, effectiveName, this.splitUploads));
     }
 
     private void setStatus(String text, ChatFormatting color) {
@@ -256,7 +293,6 @@ public class ImageUploadScreen extends Screen {
         }
         return "..." + tail;
     }
-
     private static final class FileList extends ObjectSelectionList<FileList.Entry> {
         FileList(Minecraft minecraft, int width, int height, int y) {
             super(minecraft, width, height, y, LIST_ITEM_HEIGHT);

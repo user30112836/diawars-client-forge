@@ -17,6 +17,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
 import javax.imageio.ImageIO;
 
 /**
@@ -25,6 +26,9 @@ import javax.imageio.ImageIO;
  * wheel over the preview to change its size. The selection may grow to the
  * whole square canvas ("Ganzes Bild"), so the entire image fits without
  * cutting anything off; pixels outside the image become transparent.
+ * In split mode (from the upload screen's "Aufteilen" option) the selection
+ * is divided into an N×N grid — every cell uploads as its own image named
+ * {@code base(k)}, one by one, after the server pre-checks every name.
  * Confirming crops the area and queues the upload at full resolution
  * (see {@link ImageUploader}).
  */
@@ -35,6 +39,11 @@ public class ImageCropScreen extends Screen {
 
     private final File sourceFile;
     private final String uploadName;
+
+    /** Split mode from the upload screen: the selection yields an N×N grid. */
+    private final boolean splitUploads;
+    /** Squares per direction of the grid (2..ImageUploader.MAX_GRID). */
+    private int gridCount = 2;
 
     private DynamicTexture previewTexture;
     private int imageWidth;
@@ -52,13 +61,15 @@ public class ImageCropScreen extends Screen {
     private Button confirmButton;
     private Button minusButton;
     private Button plusButton;
+    private Button gridButton;
     private StringWidget infoLine;
     private String lastInfo = "";
 
-    public ImageCropScreen(File sourceFile, String uploadName) {
+    public ImageCropScreen(File sourceFile, String uploadName, boolean splitUploads) {
         super(Component.literal("Bild zuschneiden"));
         this.sourceFile = sourceFile;
         this.uploadName = uploadName;
+        this.splitUploads = splitUploads;
     }
 
     @Override
@@ -74,6 +85,12 @@ public class ImageCropScreen extends Screen {
         this.addRenderableWidget(this.infoLine);
         this.addRenderableWidget(new StringWidget(20, this.height - 74, this.width - 40, 12,
                 Component.literal("Ziehen: verschieben · Mausrad / − / +: Größe · Ganzes Bild: transparent auffüllen"), this.font));
+
+        if (this.splitUploads) {
+            this.gridButton = Button.builder(Component.literal(gridButtonLabel()),
+                    button -> this.onGridButton()).bounds(20, this.height - 60, 200, 20).build();
+            this.addRenderableWidget(this.gridButton);
+        }
 
         int smallWidth = 44;
         int buttonWidth = 110;
@@ -91,7 +108,7 @@ public class ImageCropScreen extends Screen {
                 button -> this.fitWholeImage())
                 .bounds(buttonX + (smallWidth + gap) * 2, buttonY, buttonWidth, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("Zurück"),
-                button -> this.minecraft.setScreenAndShow(new ImageUploadScreen()))
+                button -> this.minecraft.setScreenAndShow(new ImageUploadScreen(this.splitUploads)))
                 .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, buttonWidth, 20).build());
         this.confirmButton = Button.builder(Component.literal("Hochladen"),
                 button -> this.onConfirm())
@@ -154,6 +171,10 @@ public class ImageCropScreen extends Screen {
         this.selSize = size;
         this.selX = (this.canvasSide - size) / 2;
         this.selY = (this.canvasSide - size) / 2;
+        // Split mode needs enough room for every grid cell to stay usable.
+        if (this.splitUploads) {
+            this.applyGridClamp();
+        }
     }
 
     @Override
@@ -173,9 +194,22 @@ public class ImageCropScreen extends Screen {
         this.confirmButton.active = ready;
         this.minusButton.active = ready;
         this.plusButton.active = ready;
+        if (this.gridButton != null) {
+            this.gridButton.active = ready;
+        }
         if (ready) {
-            String info = "\"" + this.uploadName + "\" · Auswahl "
-                    + this.selSize + "x" + this.selSize + " (volle Auflösung)";
+            String info;
+            if (this.splitUploads) {
+                int count = this.gridCount * this.gridCount;
+                info = "\"" + this.uploadName + "\" · " + this.gridCount + "×" + this.gridCount
+                        + " Aufteilung → " + count + " Bilder "
+                        + ImageUploader.segmentName(this.uploadName, 1) + " … "
+                        + ImageUploader.segmentName(this.uploadName, count)
+                        + " · Auswahl " + this.selSize + "x" + this.selSize;
+            } else {
+                info = "\"" + this.uploadName + "\" · Auswahl "
+                        + this.selSize + "x" + this.selSize + " (volle Auflösung)";
+            }
             if (!info.equals(this.lastInfo)) {
                 this.lastInfo = info;
                 this.infoLine.setMessage(Component.literal(info));
@@ -240,6 +274,22 @@ public class ImageCropScreen extends Screen {
         extractor.outline(sx0, sy0, sx1 - sx0, sy1 - sy0, 0xFFFFFFFF);
         // Canvas border marks the bounds of the (square) upload.
         extractor.outline(drawX, drawY, drawW, drawH, 0xFF808080);
+
+        if (this.splitUploads) {
+            // Grid lines across the selection: every cell uploads on its own.
+            int lines = this.gridCount;
+            int gridColor = 0x90FFFFFF;
+            for (int i = 1; i < lines; i++) {
+                int vx = sx0 + (int) Math.round((this.selSize * (double) i / lines) * scale);
+                if (vx > sx0 && vx < sx1) {
+                    extractor.fill(vx, sy0, vx + 1, sy1, gridColor);
+                }
+                int hy = sy0 + (int) Math.round((this.selSize * (double) i / lines) * scale);
+                if (hy > sy0 && hy < sy1) {
+                    extractor.fill(sx0, hy, sx1, hy + 1, gridColor);
+                }
+            }
+        }
     }
 
     @Override
@@ -295,7 +345,8 @@ public class ImageCropScreen extends Screen {
             return;
         }
         int step = Math.max(8, this.selSize / 8);
-        int newSize = clamp(this.selSize + dir * step, MIN_SIZE, this.canvasSide);
+        int min = this.splitUploads ? minSelSide() : MIN_SIZE;
+        int newSize = clamp(this.selSize + dir * step, min, this.canvasSide);
         if (newSize == this.selSize) {
             return;
         }
@@ -304,6 +355,38 @@ public class ImageCropScreen extends Screen {
         this.selSize = newSize;
         this.selX = clamp(centerX - newSize / 2, 0, this.canvasSide - newSize);
         this.selY = clamp(centerY - newSize / 2, 0, this.canvasSide - newSize);
+    }
+
+    /** Min selection side for the grid: prefers 64px cells, stays within the canvas. */
+    private int minSelSide() {
+        int preferred = 64 * this.gridCount;
+        return Math.min(this.canvasSide, Math.max(this.gridCount, preferred));
+    }
+
+    /** Grows the selection to the grid minimum, keeping its centre. */
+    private void applyGridClamp() {
+        int min = minSelSide();
+        if (this.selSize >= min) {
+            return;
+        }
+        int centerX = this.selX + this.selSize / 2;
+        int centerY = this.selY + this.selSize / 2;
+        this.selSize = min;
+        this.selX = clamp(centerX - min / 2, 0, this.canvasSide - min);
+        this.selY = clamp(centerY - min / 2, 0, this.canvasSide - min);
+    }
+
+    private String gridButtonLabel() {
+        return "Aufteilung: " + this.gridCount + "×" + this.gridCount
+                + " · " + (this.gridCount * this.gridCount) + " Bilder";
+    }
+
+    private void onGridButton() {
+        this.gridCount = this.gridCount >= ImageUploader.MAX_GRID ? 2 : this.gridCount + 1;
+        if (this.gridButton != null) {
+            this.gridButton.setMessage(Component.literal(gridButtonLabel()));
+        }
+        this.applyGridClamp();
     }
 
     /** Selects the whole canvas: the entire image plus transparent padding. */
@@ -317,26 +400,48 @@ public class ImageCropScreen extends Screen {
     }
 
     private void onConfirm() {
-        ImageUploader.PreparedUpload upload;
         try {
-            upload = ImageUploader.prepare(this.sourceFile, this.uploadName,
-                    new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
-                            this.selY - this.imageOffsetY(), this.selSize));
+            if (this.splitUploads) {
+                List<ImageUploader.PreparedUpload> segments = ImageUploader.prepareSplit(this.sourceFile,
+                        this.uploadName,
+                        new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
+                                this.selY - this.imageOffsetY(), this.selSize),
+                        this.gridCount);
+                if (!ImageUploader.requestSplitUpload(segments)) {
+                    String error = ImageUploader.consumeOfferError();
+                    this.showConfirmError(error != null ? error : "Upload bereits aktiv.");
+                    return;
+                }
+            } else {
+                ImageUploader.PreparedUpload upload;
+                try {
+                    upload = ImageUploader.prepare(this.sourceFile, this.uploadName,
+                            new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
+                                    this.selY - this.imageOffsetY(), this.selSize));
+                } catch (Exception e) {
+                    this.showConfirmError(e.getMessage());
+                    return;
+                }
+                // The offer handshake agrees the part count with the server first;
+                // chunks queue up once the server accepts (shown in the upload screen).
+                if (!ImageUploader.requestUpload(upload)) {
+                    String error = ImageUploader.consumeOfferError();
+                    this.showConfirmError(error != null ? error : "Upload bereits aktiv.");
+                    return;
+                }
+            }
         } catch (Exception e) {
-            this.lastInfo = "";
-            this.infoLine.setMessage(Component.literal("Fehler: " + e.getMessage()).withStyle(ChatFormatting.RED));
+            this.showConfirmError(e.getMessage());
             return;
         }
-        // The offer handshake agrees the part count with the server first;
-        // chunks queue up once the server accepts (shown in the upload screen).
-        if (!ImageUploader.requestUpload(upload)) {
-            String error = ImageUploader.consumeOfferError();
-            this.lastInfo = "";
-            this.infoLine.setMessage(Component.literal("Fehler: " + (error != null ? error : "Upload bereits aktiv."))
-                    .withStyle(ChatFormatting.RED));
-            return;
-        }
-        this.minecraft.setScreenAndShow(new ImageUploadScreen());
+        // Offer errors and progress show on the upload screen.
+        this.minecraft.setScreenAndShow(new ImageUploadScreen(this.splitUploads));
+    }
+
+    private void showConfirmError(String message) {
+        this.lastInfo = "";
+        this.infoLine.setMessage(Component.literal("Fehler: " + (message != null ? message : "unbekannt"))
+                .withStyle(ChatFormatting.RED));
     }
 
     /** Horizontal offset of the image inside the square canvas. */

@@ -59,10 +59,16 @@ public final class ImageUploader {
     public static final String FOLDER_NAME = "diawars-images";
 
     private static final String[] EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp"};
-    private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9._-]{1,32}");
+    private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9._()-]{1,32}");
     private static final Gson GSON = new Gson();
 
     private static final Deque<String> QUEUE = new ArrayDeque<>();
+
+    /** Max side length of one grid cell: keeps 25-cell encodings fast. */
+    private static final int SPLIT_MAX_CELL = 2048;
+
+    /** How long a name check may go unanswered before the split fails. */
+    private static final long CHECK_TIMEOUT_MILLIS = 15_000;
 
     private ImageUploader() {
     }
@@ -77,6 +83,27 @@ public final class ImageUploader {
     private static volatile long offerSentAt;
     private static volatile boolean waitingForAccept;
     private static volatile String offerError;
+
+    /** Loader-specific sender for {@code diawars:image_check} documents. */
+    public interface CheckSender {
+        boolean sendCheck(String json);
+    }
+
+    private static volatile CheckSender checkSender;
+
+    public static void initCheckSender(CheckSender sender) {
+        checkSender = sender;
+    }
+
+    /**
+     * Split upload batch state: the name check runs first; once the server
+     * confirms every name, segments are offered one by one (see
+     * {@link #tickBatch()}). All batch fields are guarded by the class lock.
+     */
+    private static List<PreparedUpload> batch;
+    private static int batchNext;
+    private static volatile boolean checkingNames;
+    private static volatile long checkSentAt;
 
     public static void initOfferSender(OfferSender sender) {
         offerSender = sender;
@@ -109,6 +136,23 @@ public final class ImageUploader {
         offerError = message;
     }
 
+    /** Records a split error on the split upload's screen sink. */
+    private static void failBatch(String message) {
+        offerError = message;
+    }
+
+    /** Discards the running batch (upload cancelled). */
+    private static void clearBatch() {
+        batch = null;
+        batchNext = 0;
+    }
+
+    /**
+     * One prepared upload. {@code report} is non-null only for report
+     * screenshot attachments (see {@link ReportScreenshot}): those uploads
+     * are tagged with a {@code report} field in offer and chunks so the
+     * server stores them under the report instead of the player's gallery.
+     */
     public record PreparedUpload(String fileName, List<String> chunks, long bytes, String hash, String report) {
         public PreparedUpload(String fileName, List<String> chunks, long bytes, String hash) {
             this(fileName, chunks, bytes, hash, null);
@@ -244,13 +288,13 @@ public final class ImageUploader {
 
     private static boolean isNameChar(char c) {
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-                || c == '.' || c == '_' || c == '-';
+                || c == '.' || c == '_' || c == '-' || c == '(' || c == ')';
     }
 
     /**
      * Returns the sanitized upload name, or null when invalid.
-     * Mirrors the server rules: letters, digits, {@code . _ -}, max 32 chars,
-     * and {@code all} is reserved.
+     * Mirrors the server rules: letters, digits, {@code . _ - ( )}, max 32
+     * chars, and {@code all} is reserved.
      */
     public static String sanitize(String raw) {
         if (raw == null) {
@@ -308,6 +352,64 @@ public final class ImageUploader {
             image = applyCrop(image, crop);
         }
         return encode(image, name, null);
+    }
+
+    /** Max segments of a split upload (5×5 grid; mirrors the server cap). */
+    public static final int MAX_GRID = 5;
+
+    /**
+     * Prepares every cell of an N×N split of the given square crop area as
+     * its own upload, named {@code base(k)} row-major (top-left is 1), each
+     * capped at {@value #SPLIT_MAX_CELL}px per side to keep encodings fast.
+     * The source is decoded once; the segment names are pre-checkable before
+     * anything uploads (see {@link #requestSplitUpload}).
+     *
+     * @param whole square crop area covering the entire grid (see
+     *              ImageCropScreen)
+     * @throws IOException              when the file cannot be read as an image
+     * @throws IllegalArgumentException when a name/grid/crop is invalid
+     */
+    public static List<PreparedUpload> prepareSplit(File file, String baseName, CropArea whole, int n) throws IOException {
+        if (n < 2 || n > MAX_GRID) {
+            throw new IllegalArgumentException("Ungültige Aufteilung.");
+        }
+        String base = sanitize(baseName);
+        if (base == null) {
+            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - ( ) (max. 32 Zeichen, nicht \"all\").");
+        }
+        if (whole == null || whole.size() < n) {
+            throw new IllegalArgumentException("Der Ausschnitt ist zu klein für eine " + n + "×" + n + " Aufteilung.");
+        }
+        validateSource(file);
+
+        BufferedImage image = ImageIO.read(file);
+        if (image == null) {
+            throw new IOException("Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).");
+        }
+        image = applyCrop(image, whole);
+        // applyCrop returns exactly this square (see its implementation).
+        int side = whole.size();
+
+        boolean keepAlpha = image.getColorModel().hasAlpha();
+        List<PreparedUpload> segments = new ArrayList<>();
+        for (int row = 0; row < n; row++) {
+            for (int col = 0; col < n; col++) {
+                int x = (int) Math.round(col * (double) side / n);
+                int y = (int) Math.round(row * (double) side / n);
+                int width = Math.max(1, (int) Math.round((col + 1) * (double) side / n) - x);
+                int height = Math.max(1, (int) Math.round((row + 1) * (double) side / n) - y);
+                BufferedImage cell = new BufferedImage(width, height,
+                        keepAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
+                Graphics2D g = cell.createGraphics();
+                try {
+                    g.drawImage(image, 0, 0, width, height, x, y, x + width, y + height, null);
+                } finally {
+                    g.dispose();
+                }
+                segments.add(encode(cell, segmentName(base, row * n + col + 1), null));
+            }
+        }
+        return segments;
     }
 
     /**
@@ -424,6 +526,10 @@ public final class ImageUploader {
                     ? root.get("error").getAsString() : "Der Server hat den Upload abgelehnt.";
             // Server messages use MiniMessage tags; chat/screen shows plain text.
             recordError(pending, error.replaceAll("<[^>]*>", ""));
+            // A rejected segment cancels the rest of a split upload.
+            synchronized (ImageUploader.class) {
+                clearBatch();
+            }
         }
     }
 
@@ -434,6 +540,10 @@ public final class ImageUploader {
             pendingUpload = null;
             waitingForAccept = false;
             recordError(pending, "Der Server antwortet nicht auf den Upload.");
+            // A segment that never gets accepted cancels the rest of a split.
+            synchronized (ImageUploader.class) {
+                clearBatch();
+            }
         }
     }
 
@@ -467,6 +577,110 @@ public final class ImageUploader {
         QUEUE.addAll(chunks);
     }
 
+    /**
+     * Starts a split upload: first every segment name is sent to the server
+     * for a pre-check (see {@link ImageCheckPayload}); segments upload one by
+     * one only after the server confirms every name — if any name is taken,
+     * invalid or the limit has no headroom, the whole upload is cancelled
+     * with an error (nothing is uploaded). Returns false (and records an
+     * error) when another upload is still active.
+     */
+    public static synchronized boolean requestSplitUpload(List<PreparedUpload> segments) {
+        if (checkingNames || waitingForAccept || hasQueued() || batch != null) {
+            offerError = "Bereits ein Upload aktiv, bitte warten.";
+            return false;
+        }
+        if (checkSender == null) {
+            offerError = "Keine Serververbindung für den Upload.";
+            return false;
+        }
+        com.google.gson.JsonArray names = new com.google.gson.JsonArray();
+        for (PreparedUpload segment : segments) {
+            names.add(segment.fileName());
+        }
+        JsonObject json = new JsonObject();
+        json.add("names", names);
+        if (!checkSender.sendCheck(GSON.toJson(json))) {
+            offerError = "Der Upload konnte nicht gestartet werden (keine Verbindung?).";
+            return false;
+        }
+        batch = segments;
+        batchNext = 0;
+        checkingNames = true;
+        checkSentAt = System.currentTimeMillis();
+        return true;
+    }
+
+    /**
+     * Handles one {@code diawars:image_check_ok} document: on ok the first
+     * segment is offered on the next tick, otherwise the whole split upload
+     * is cancelled (nothing was uploaded).
+     */
+    public static synchronized void handleCheckOk(String json) {
+        if (!checkingNames) {
+            return;
+        }
+        checkingNames = false;
+        String error;
+        try {
+            JsonObject root = GSON.fromJson(json, JsonObject.class);
+            boolean ok = root != null && root.has("ok") && root.get("ok").isJsonPrimitive()
+                    && root.get("ok").getAsBoolean();
+            if (ok) {
+                // batch + batchNext stay; tickBatch offers segment 1 next tick.
+                return;
+            }
+            error = root != null && root.has("error") && root.get("error").isJsonPrimitive()
+                    ? root.get("error").getAsString() : "Der Server hat die Aufteilung abgelehnt.";
+        } catch (Exception e) {
+            error = "Der Server hat die Aufteilung abgelehnt.";
+        }
+        // Server messages use MiniMessage tags; chat/screen shows plain text.
+        failBatch(error.replaceAll("<[^>]*>", ""));
+    }
+
+    /**
+     * Offers the next split segment whenever the connection is idle. Call
+     * once per client tick (after tickOffer/drain). A rejected offer cancels
+     * the remaining segments.
+     */
+    public static synchronized void tickBatch() {
+        if (checkingNames) {
+            if (System.currentTimeMillis() - checkSentAt > CHECK_TIMEOUT_MILLIS) {
+                clearBatch();
+                failBatch("Der Server antwortet nicht (Namenprüfung).");
+            }
+            return;
+        }
+        if (batch == null || waitingForAccept || hasQueued()) {
+            return;
+        }
+        if (batchNext >= batch.size()) {
+            clearBatch();
+            return;
+        }
+        if (requestUpload(batch.get(batchNext))) {
+            batchNext++;
+        } else {
+            clearBatch();
+        }
+    }
+
+    /** While a split upload runs: 1-based segment number being sent, else 0. */
+    public static synchronized int batchCurrentSegment() {
+        return batch != null ? batchNext : 0;
+    }
+
+    /** Number of segments of the running split upload, else 0. */
+    public static synchronized int batchSegmentCount() {
+        return batch != null ? batch.size() : 0;
+    }
+
+    /** True while the server has not yet answered the split name check. */
+    public static synchronized boolean isCheckingNames() {
+        return checkingNames;
+    }
+
     public static synchronized boolean hasQueued() {
         return !QUEUE.isEmpty();
     }
@@ -483,6 +697,8 @@ public final class ImageUploader {
         QUEUE.clear();
         pendingUpload = null;
         waitingForAccept = false;
+        checkingNames = false;
+        clearBatch();
     }
 
     /** Checks file presence and size without decoding (for pre-validation). */
@@ -499,9 +715,23 @@ public final class ImageUploader {
     public static String resolveName(File file, String wantedName) {
         String name = wantedName == null || wantedName.isBlank() ? deriveName(file) : sanitize(wantedName);
         if (name == null) {
-            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - (max. 32 Zeichen, nicht \"all\").");
+            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - ( ) (max. 32 Zeichen, nicht \"all\").");
         }
         return name;
+    }
+
+    /**
+     * Builds a split segment name {@code base(k)} (k starts at 1); the base
+     * is shortened so the whole name stays inside the 32-char limit.
+     */
+    public static String segmentName(String base, int index) {
+        String suffix = "(" + index + ")";
+        String name = base == null ? "" : base;
+        int maxBase = 32 - suffix.length();
+        if (name.length() > maxBase) {
+            name = name.substring(0, maxBase);
+        }
+        return name + suffix;
     }
 
     /** Shrinks the image until it fits the server upload cap (never below 128px). */

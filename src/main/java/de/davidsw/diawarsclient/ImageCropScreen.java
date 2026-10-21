@@ -21,16 +21,17 @@ import java.util.List;
 import javax.imageio.ImageIO;
 
 /**
- * Second upload step: shows the image and lets the player pick the square
- * area to upload. Drag inside the preview to move the square, use the mouse
- * wheel over the preview to change its size. The selection may grow to the
- * whole square canvas ("Ganzes Bild"), so the entire image fits without
- * cutting anything off; pixels outside the image become transparent.
- * The "Aufteilen" toggle splits the selection into a rows×cols grid (free
- * shape, e.g. 2×3 or 5×1, via the "Zeilen"/"Spalten" steppers) — every cell
- * uploads as its own image named {@code base (k)}, one by one, after the
- * server pre-checks every name. Confirming crops the area and queues the
- * upload at full resolution (see {@link ImageUploader}).
+ * Second upload step: shows the image and lets the player pick the area to
+ * upload. Drag inside the preview to move the selection, use the mouse wheel
+ * over the preview to change its size. The selection may grow to the whole
+ * square canvas ("Ganzes Bild"), so the entire image fits without cutting
+ * anything off; pixels outside the image become transparent.
+ * The "Aufteilen" toggle switches the selection into a rows×cols rectangle
+ * of square cells (free shape, e.g. 2×3 or 5×1, via the "Zeilen"/"Spalten"
+ * steppers; the wheel then changes the cell size) — every cell uploads as
+ * its own square image named {@code base (k)}, one by one, after the server
+ * pre-checks every name. Confirming crops the area and queues the upload
+ * at full resolution (see {@link ImageUploader}).
  */
 public class ImageCropScreen extends Screen {
     private static final Identifier PREVIEW_ID =
@@ -54,7 +55,10 @@ public class ImageCropScreen extends Screen {
 
     private int selX;
     private int selY;
-    private int selSize;
+    private int selW;
+    private int selH;
+    /** Split mode: side of every square cell (selW = cellSize·cols etc.). */
+    private int cellSize;
     private boolean dragging;
     private double grabDX;
     private double grabDY;
@@ -171,13 +175,11 @@ public class ImageCropScreen extends Screen {
         // fitted without cutting it off.
         this.canvasSide = Math.max(this.imageWidth, this.imageHeight);
         int size = Math.min(this.imageWidth, this.imageHeight);
-        this.selSize = size;
+        this.selW = size;
+        this.selH = size;
         this.selX = (this.canvasSide - size) / 2;
         this.selY = (this.canvasSide - size) / 2;
-        // Split mode needs enough room for every grid cell to stay usable.
-        if (this.splitUploads) {
-            this.applyGridClamp();
-        }
+        this.cellSize = size;
     }
 
     @Override
@@ -212,10 +214,10 @@ public class ImageCropScreen extends Screen {
                         + " Aufteilung → " + count + " Bilder "
                         + ImageUploader.segmentName(this.uploadName, 1) + " … "
                         + ImageUploader.segmentName(this.uploadName, count)
-                        + " · Auswahl " + this.selSize + "x" + this.selSize;
+                        + " · Zelle " + this.cellSize + "x" + this.cellSize;
             } else {
                 info = "\"" + this.uploadName + "\" · Auswahl "
-                        + this.selSize + "x" + this.selSize + " (volle Auflösung)";
+                        + this.selW + "x" + this.selH + " (volle Auflösung)";
             }
             if (!info.equals(this.lastInfo)) {
                 this.lastInfo = info;
@@ -261,8 +263,8 @@ public class ImageCropScreen extends Screen {
 
         int sx0 = drawX + (int) Math.round(this.selX * scale);
         int sy0 = drawY + (int) Math.round(this.selY * scale);
-        int sx1 = drawX + (int) Math.round((this.selX + this.selSize) * scale);
-        int sy1 = drawY + (int) Math.round((this.selY + this.selSize) * scale);
+        int sx1 = drawX + (int) Math.round((this.selX + this.selW) * scale);
+        int sy1 = drawY + (int) Math.round((this.selY + this.selH) * scale);
 
         int dim = 0x80000000;
         if (sy0 > drawY) {
@@ -283,16 +285,16 @@ public class ImageCropScreen extends Screen {
         extractor.outline(drawX, drawY, drawW, drawH, 0xFF808080);
 
         if (this.splitUploads) {
-            // Grid lines across the selection: every cell uploads on its own.
+            // Grid lines across the selection: every square cell uploads on its own.
             int gridColor = 0x90FFFFFF;
             for (int i = 1; i < this.gridCols; i++) {
-                int vx = sx0 + (int) Math.round((this.selSize * (double) i / this.gridCols) * scale);
+                int vx = sx0 + i * (int) Math.round(this.cellSize * scale);
                 if (vx > sx0 && vx < sx1) {
                     extractor.fill(vx, sy0, vx + 1, sy1, gridColor);
                 }
             }
             for (int i = 1; i < this.gridRows; i++) {
-                int hy = sy0 + (int) Math.round((this.selSize * (double) i / this.gridRows) * scale);
+                int hy = sy0 + i * (int) Math.round(this.cellSize * scale);
                 if (hy > sy0 && hy < sy1) {
                     extractor.fill(sx0, hy, sx1, hy + 1, gridColor);
                 }
@@ -310,8 +312,8 @@ public class ImageCropScreen extends Screen {
         if (event.button() == 0 && this.previewTexture != null && this.inPreview(event.x(), event.y())) {
             double canvasX = (event.x() - this.previewX()) / this.previewScale();
             double canvasY = (event.y() - this.previewY()) / this.previewScale();
-            if (canvasX < this.selX || canvasX >= this.selX + this.selSize
-                    || canvasY < this.selY || canvasY >= this.selY + this.selSize) {
+            if (canvasX < this.selX || canvasX >= this.selX + this.selW
+                    || canvasY < this.selY || canvasY >= this.selY + this.selH) {
                 this.centerOn(canvasX, canvasY);
             }
             this.grabDX = canvasX - this.selX;
@@ -326,8 +328,8 @@ public class ImageCropScreen extends Screen {
         if (this.dragging && this.previewTexture != null) {
             double canvasX = (event.x() - this.previewX()) / this.previewScale();
             double canvasY = (event.y() - this.previewY()) / this.previewScale();
-            this.selX = clamp(Math.round(canvasX - this.grabDX), 0, this.canvasSide - this.selSize);
-            this.selY = clamp(Math.round(canvasY - this.grabDY), 0, this.canvasSide - this.selSize);
+            this.selX = clamp(Math.round(canvasX - this.grabDX), 0, this.canvasSide - this.selW);
+            this.selY = clamp(Math.round(canvasY - this.grabDY), 0, this.canvasSide - this.selH);
         }
         return super.mouseDragged(event, dragX, dragY);
     }
@@ -347,42 +349,59 @@ public class ImageCropScreen extends Screen {
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
-    /** Grows (dir > 0) or shrinks the selection square around its centre. */
+    /** Grows (dir > 0) or shrinks the selection around its centre. */
     private void resizeBy(int dir) {
         if (this.previewTexture == null) {
             return;
         }
-        int step = Math.max(8, this.selSize / 8);
-        int min = this.splitUploads ? minSelSide() : MIN_SIZE;
-        int newSize = clamp(this.selSize + dir * step, min, this.canvasSide);
-        if (newSize == this.selSize) {
+        if (this.splitUploads) {
+            // Fixed rows×cols aspect: the wheel/+/- change the square cell size.
+            this.cellSize += dir * Math.max(8, this.cellSize / 8);
+            this.applyShape();
             return;
         }
-        int centerX = this.selX + this.selSize / 2;
-        int centerY = this.selY + this.selSize / 2;
-        this.selSize = newSize;
+        int step = Math.max(8, this.selW / 8);
+        int newSize = clamp(this.selW + dir * step, MIN_SIZE, this.canvasSide);
+        if (newSize == this.selW) {
+            return;
+        }
+        int centerX = this.selX + this.selW / 2;
+        int centerY = this.selY + this.selH / 2;
+        this.selW = newSize;
+        this.selH = newSize;
         this.selX = clamp(centerX - newSize / 2, 0, this.canvasSide - newSize);
         this.selY = clamp(centerY - newSize / 2, 0, this.canvasSide - newSize);
     }
 
-    /** Min selection side for the grid: prefers 64px cells, stays within the canvas. */
-    private int minSelSide() {
+    /** Max cell side for the grid shape: the selection must fit the canvas. */
+    private int maxCellSide() {
         int largest = Math.max(this.gridRows, this.gridCols);
-        int preferred = 64 * largest;
-        return Math.min(this.canvasSide, Math.max(largest, preferred));
+        return Math.max(1, this.canvasSide / largest);
     }
 
-    /** Grows the selection to the grid minimum, keeping its centre. */
+    /** Min cell side: hard floor 8px unless the canvas allows less. */
+    private int minCellSide() {
+        return Math.min(MIN_SIZE, maxCellSide());
+    }
+
+    /**
+     * Recomputes the rows×cols selection rectangle from the cell size,
+     * clamped to the canvas and keeping the selection centre.
+     */
+    private void applyShape() {
+        this.cellSize = clamp(this.cellSize, minCellSide(), maxCellSide());
+        int centerX = this.selX + this.selW / 2;
+        int centerY = this.selY + this.selH / 2;
+        this.selW = this.cellSize * this.gridCols;
+        this.selH = this.cellSize * this.gridRows;
+        this.selX = clamp(centerX - this.selW / 2, 0, this.canvasSide - this.selW);
+        this.selY = clamp(centerY - this.selH / 2, 0, this.canvasSide - this.selH);
+    }
+
+    /** Grows cells to the 64px preferred size when the canvas allows it. */
     private void applyGridClamp() {
-        int min = minSelSide();
-        if (this.selSize >= min) {
-            return;
-        }
-        int centerX = this.selX + this.selSize / 2;
-        int centerY = this.selY + this.selSize / 2;
-        this.selSize = min;
-        this.selX = clamp(centerX - min / 2, 0, this.canvasSide - min);
-        this.selY = clamp(centerY - min / 2, 0, this.canvasSide - min);
+        this.cellSize = Math.max(this.cellSize, Math.min(64, maxCellSide()));
+        this.applyShape();
     }
 
     private String splitToggleLabel() {
@@ -442,7 +461,13 @@ public class ImageCropScreen extends Screen {
         if (this.previewTexture == null) {
             return;
         }
-        this.selSize = this.canvasSide;
+        if (this.splitUploads) {
+            this.cellSize = maxCellSide();
+            this.applyShape();
+            return;
+        }
+        this.selW = this.canvasSide;
+        this.selH = this.canvasSide;
         this.selX = 0;
         this.selY = 0;
     }
@@ -453,7 +478,7 @@ public class ImageCropScreen extends Screen {
                 List<ImageUploader.PreparedUpload> segments = ImageUploader.prepareSplit(this.sourceFile,
                         this.uploadName,
                         new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
-                                this.selY - this.imageOffsetY(), this.selSize),
+                                this.selY - this.imageOffsetY(), this.selW, this.selH),
                         this.gridRows, this.gridCols);
                 if (!ImageUploader.requestSplitUpload(segments)) {
                     String error = ImageUploader.consumeOfferError();
@@ -465,7 +490,7 @@ public class ImageCropScreen extends Screen {
                 try {
                     upload = ImageUploader.prepare(this.sourceFile, this.uploadName,
                             new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
-                                    this.selY - this.imageOffsetY(), this.selSize));
+                                    this.selY - this.imageOffsetY(), this.selW, this.selH));
                 } catch (Exception e) {
                     this.showConfirmError(e.getMessage());
                     return;
@@ -533,8 +558,8 @@ public class ImageCropScreen extends Screen {
     }
 
     private void centerOn(double canvasX, double canvasY) {
-        this.selX = clamp(Math.round(canvasX - this.selSize / 2.0), 0, this.canvasSide - this.selSize);
-        this.selY = clamp(Math.round(canvasY - this.selSize / 2.0), 0, this.canvasSide - this.selSize);
+        this.selX = clamp(Math.round(canvasX - this.selW / 2.0), 0, this.canvasSide - this.selW);
+        this.selY = clamp(Math.round(canvasY - this.selH / 2.0), 0, this.canvasSide - this.selH);
     }
 
     private static int clamp(long value, int min, int max) {

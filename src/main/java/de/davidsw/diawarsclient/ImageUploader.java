@@ -160,11 +160,11 @@ public final class ImageUploader {
     }
 
     /**
-     * Square crop area in source image pixels. May extend beyond the image
-     * (negative {@code x}/{@code y} or {@code size} larger than a dimension);
-     * pixels outside the image become transparent.
+     * Rectangular crop area in source image pixels. May extend beyond the
+     * image (negative {@code x}/{@code y} or a size larger than a
+     * dimension); pixels outside the image become transparent.
      */
-    public record CropArea(int x, int y, int size) {
+    public record CropArea(int x, int y, int width, int height) {
     }
 
     public static File getFolder(Minecraft minecraft) {
@@ -326,9 +326,9 @@ public final class ImageUploader {
     }
 
     /**
-     * Reads, crops (square) and chunks an image at full resolution.
+     * Reads, crops and chunks an image at full resolution.
      *
-     * <p>The cropped square is kept at its native resolution (capped at
+     * <p>The cropped area is kept at its native resolution (capped at
      * {@value #MAX_DIMENSION}px and shrunk until the PNG fits
      * {@value #MAX_UPLOAD_BYTES} bytes): the server stores it as-is for
      * modded clients and derives the 128x128 map thumbnail itself, so
@@ -336,7 +336,7 @@ public final class ImageUploader {
      *
      * @param file       source image on the local file system
      * @param wantedName upload name, or null/blank to derive it from the file
-     * @param crop       square area to use, or null for the whole image
+     * @param crop       area to use, or null for the whole image
      * @throws IOException              when the file cannot be read as an image
      * @throws IllegalArgumentException when the upload name is invalid
      */
@@ -358,15 +358,16 @@ public final class ImageUploader {
     public static final int MAX_GRID = 5;
 
     /**
-     * Prepares every cell of a rows×cols split of the given square crop area
-     * as its own upload, named {@code base (k)} row-major (top-left is 1),
-     * each capped at {@value #SPLIT_MAX_CELL}px per side to keep encodings
-     * fast. Rectangular cells are centred on a square canvas (transparent
-     * padding) because every map is 1:1. The source is decoded once; the
-     * segment names are pre-checkable before anything uploads (see
-     * {@link #requestSplitUpload}).
+     * Prepares every cell of a rows×cols split of the given crop area as its
+     * own upload, named {@code base (k)} row-major (top-left is 1). Cells are
+     * exact squares: {@code whole.width} must be {@code cols·cell} and
+     * {@code whole.height} {@code rows·cell} for one shared cell side (the
+     * crop screen builds such a rectangle). Each cell is capped at
+     * {@value #SPLIT_MAX_CELL}px per side to keep encodings fast. The source
+     * is decoded once; the segment names are pre-checkable before anything
+     * uploads (see {@link #requestSplitUpload}).
      *
-     * @param whole square crop area covering the entire grid (see
+     * @param whole rectangular crop area covering the entire grid (see
      *              ImageCropScreen)
      * @throws IOException              when the file cannot be read as an image
      * @throws IllegalArgumentException when a name/grid/crop is invalid
@@ -379,9 +380,12 @@ public final class ImageUploader {
         if (base == null) {
             throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - ( ) und Leerzeichen (max. 32 Zeichen, nicht \"all\").");
         }
-        if (whole == null || whole.size() < Math.max(rows, cols)) {
-            throw new IllegalArgumentException("Der Ausschnitt ist zu klein für eine " + rows + "×" + cols + " Aufteilung.");
+        if (whole == null || whole.width() < 1 || whole.height() < 1
+                || whole.width() % cols != 0 || whole.height() % rows != 0
+                || whole.width() / cols != whole.height() / rows) {
+            throw new IllegalArgumentException("Ungültige Aufteilung.");
         }
+        int cell = whole.width() / cols;
         validateSource(file);
 
         BufferedImage image = ImageIO.read(file);
@@ -389,35 +393,24 @@ public final class ImageUploader {
             throw new IOException("Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).");
         }
         image = applyCrop(image, whole);
-        // applyCrop returns exactly this square (see its implementation).
-        int side = whole.size();
 
         boolean keepAlpha = image.getColorModel().hasAlpha();
         List<PreparedUpload> segments = new ArrayList<>();
         for (int row = 0; row < rows; row++) {
             for (int col = 0; col < cols; col++) {
-                int x = (int) Math.round(col * (double) side / cols);
-                int y = (int) Math.round(row * (double) side / rows);
-                int width = Math.max(1, (int) Math.round((col + 1) * (double) side / cols) - x);
-                int height = Math.max(1, (int) Math.round((row + 1) * (double) side / rows) - y);
-                // Every map is square: rectangular cells are centred on a
-                // square canvas; the padding stays transparent.
-                int canvas = Math.max(width, height);
-                boolean padded = width < canvas || height < canvas;
-                BufferedImage cell = new BufferedImage(canvas, canvas,
-                        keepAlpha || padded ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
-                Graphics2D g = cell.createGraphics();
+                BufferedImage cellImage = new BufferedImage(cell, cell,
+                        keepAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
+                Graphics2D g = cellImage.createGraphics();
                 try {
-                    g.drawImage(image, (canvas - width) / 2, (canvas - height) / 2,
-                            (canvas - width) / 2 + width, (canvas - height) / 2 + height,
-                            x, y, x + width, y + height, null);
+                    g.drawImage(image, 0, 0, cell, cell, col * cell, row * cell,
+                            (col + 1) * cell, (row + 1) * cell, null);
                 } finally {
                     g.dispose();
                 }
-                if (canvas > SPLIT_MAX_CELL) {
-                    cell = scale(cell, (double) SPLIT_MAX_CELL / canvas);
+                if (cell > SPLIT_MAX_CELL) {
+                    cellImage = scale(cellImage, (double) SPLIT_MAX_CELL / cell);
                 }
-                segments.add(encode(cell, segmentName(base, row * cols + col + 1), null));
+                segments.add(encode(cellImage, segmentName(base, row * cols + col + 1), null));
             }
         }
         return segments;
@@ -788,22 +781,23 @@ public final class ImageUploader {
     }
 
     /**
-     * Cuts the square crop area out of the image. A crop fully inside the
-     * image stays opaque; a crop that extends beyond it is padded with
-     * transparent pixels, so the whole image can be fitted into a square
-     * selection without cutting anything off.
+     * Cuts the rectangular crop area out of the image. A crop fully inside
+     * the image stays opaque; a crop that extends beyond it is padded with
+     * transparent pixels, so the whole image can be fitted into a selection
+     * without cutting anything off.
      */
     private static BufferedImage applyCrop(BufferedImage image, CropArea crop) throws IOException {
-        int size = crop.size();
-        if (size < 1) {
+        int width = crop.width();
+        int height = crop.height();
+        if (width < 1 || height < 1) {
             throw new IOException("Ungültiger Bildausschnitt.");
         }
         boolean insideImage = crop.x() >= 0 && crop.y() >= 0
-                && crop.x() + (long) size <= image.getWidth()
-                && crop.y() + (long) size <= image.getHeight();
+                && crop.x() + (long) width <= image.getWidth()
+                && crop.y() + (long) height <= image.getHeight();
         if (insideImage) {
-            BufferedImage sub = image.getSubimage(crop.x(), crop.y(), size, size);
-            BufferedImage copy = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+            BufferedImage sub = image.getSubimage(crop.x(), crop.y(), width, height);
+            BufferedImage copy = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
             Graphics2D g = copy.createGraphics();
             try {
                 g.drawImage(sub, 0, 0, null);
@@ -812,7 +806,7 @@ public final class ImageUploader {
             }
             return copy;
         }
-        BufferedImage padded = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage padded = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = padded.createGraphics();
         try {
             g.drawImage(image, -crop.x(), -crop.y(), null);

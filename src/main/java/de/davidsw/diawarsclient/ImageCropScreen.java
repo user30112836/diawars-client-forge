@@ -246,25 +246,39 @@ public class ImageCropScreen extends Screen {
         int drawW = this.previewDrawW();
         int drawH = this.previewDrawH();
         double scale = this.previewScale();
+        double off = this.originOff();
 
         // Canvas background: stands in for the transparent padding around the
         // image (anything outside the image in the selection uploads as
-        // transparent).
-        extractor.fill(drawX, drawY, drawX + drawW, drawY + drawH, 0xFF1E1E1E);
+        // transparent). The canvas is the square around the image; in split
+        // mode the selectable grid frame may reach beyond it.
+        int canvasX0 = drawX + (int) Math.round(off * scale);
+        int canvasY0 = drawY + (int) Math.round(off * scale);
+        int canvasDraw = (int) Math.round(this.canvasSide * scale);
+        extractor.fill(canvasX0, canvasY0, canvasX0 + canvasDraw, canvasY0 + canvasDraw, 0xFF1E1E1E);
+
+        // Grid frame outline: the area the split selection can cover.
+        if (this.splitUploads) {
+            int fx0 = canvasX0 + (int) Math.round(this.frameX0() * scale);
+            int fy0 = canvasY0 + (int) Math.round(this.frameY0() * scale);
+            int fx1 = canvasX0 + (int) Math.round((this.frameX0() + this.frameW()) * scale);
+            int fy1 = canvasY0 + (int) Math.round((this.frameY0() + this.frameH()) * scale);
+            extractor.outline(fx0, fy0, fx1 - fx0, fy1 - fy0, 0xFF606060);
+        }
 
         // Image drawn inside the canvas at its centred offset.
-        int imgX = drawX + (int) Math.round(this.imageOffsetX() * scale);
-        int imgY = drawY + (int) Math.round(this.imageOffsetY() * scale);
+        int imgX = canvasX0 + (int) Math.round(this.imageOffsetX() * scale);
+        int imgY = canvasY0 + (int) Math.round(this.imageOffsetY() * scale);
         int imgW = Math.max(1, (int) Math.round(this.imageWidth * scale));
         int imgH = Math.max(1, (int) Math.round(this.imageHeight * scale));
         extractor.blit(RenderPipelines.GUI_TEXTURED, PREVIEW_ID,
                 imgX, imgY, 0.0F, 0.0F, imgW, imgH,
                 this.imageWidth, this.imageHeight, this.imageWidth, this.imageHeight);
 
-        int sx0 = drawX + (int) Math.round(this.selX * scale);
-        int sy0 = drawY + (int) Math.round(this.selY * scale);
-        int sx1 = drawX + (int) Math.round((this.selX + this.selW) * scale);
-        int sy1 = drawY + (int) Math.round((this.selY + this.selH) * scale);
+        int sx0 = drawX + (int) Math.round((this.selX + off) * scale);
+        int sy0 = drawY + (int) Math.round((this.selY + off) * scale);
+        int sx1 = drawX + (int) Math.round((this.selX + this.selW + off) * scale);
+        int sy1 = drawY + (int) Math.round((this.selY + this.selH + off) * scale);
 
         int dim = 0x80000000;
         if (sy0 > drawY) {
@@ -310,8 +324,8 @@ public class ImageCropScreen extends Screen {
     @Override
     public boolean mouseClicked(MouseButtonEvent event, boolean doubleClicked) {
         if (event.button() == 0 && this.previewTexture != null && this.inPreview(event.x(), event.y())) {
-            double canvasX = (event.x() - this.previewX()) / this.previewScale();
-            double canvasY = (event.y() - this.previewY()) / this.previewScale();
+            double canvasX = this.canvasMouseX(event.x());
+            double canvasY = this.canvasMouseY(event.y());
             if (canvasX < this.selX || canvasX >= this.selX + this.selW
                     || canvasY < this.selY || canvasY >= this.selY + this.selH) {
                 this.centerOn(canvasX, canvasY);
@@ -326,10 +340,9 @@ public class ImageCropScreen extends Screen {
     @Override
     public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
         if (this.dragging && this.previewTexture != null) {
-            double canvasX = (event.x() - this.previewX()) / this.previewScale();
-            double canvasY = (event.y() - this.previewY()) / this.previewScale();
-            this.selX = clamp(Math.round(canvasX - this.grabDX), 0, this.canvasSide - this.selW);
-            this.selY = clamp(Math.round(canvasY - this.grabDY), 0, this.canvasSide - this.selH);
+            this.selX = (int) Math.round(this.canvasMouseX(event.x()) - this.grabDX);
+            this.selY = (int) Math.round(this.canvasMouseY(event.y()) - this.grabDY);
+            this.clampSelectionPos();
         }
         return super.mouseDragged(event, dragX, dragY);
     }
@@ -373,20 +386,11 @@ public class ImageCropScreen extends Screen {
         this.selY = clamp(centerY - newSize / 2, 0, this.canvasSide - newSize);
     }
 
-    /** Max cell side for the grid shape: the selection must fit the canvas. */
-    private int maxCellSide() {
-        int largest = Math.max(this.gridRows, this.gridCols);
-        return Math.max(1, this.canvasSide / largest);
-    }
-
-    /** Min cell side: hard floor 8px unless the canvas allows less. */
-    private int minCellSide() {
-        return Math.min(MIN_SIZE, maxCellSide());
-    }
-
     /**
-     * Recomputes the rows×cols selection rectangle from the cell size,
-     * clamped to the canvas and keeping the selection centre.
+     * Recomputes the rows×cols selection rectangle from the cell size.
+     * In split mode the selection slides inside the grid frame (which can
+     * reach beyond the canvas); otherwise it is clamped to the canvas. The
+     * selection centre is preserved.
      */
     private void applyShape() {
         this.cellSize = clamp(this.cellSize, minCellSide(), maxCellSide());
@@ -394,8 +398,20 @@ public class ImageCropScreen extends Screen {
         int centerY = this.selY + this.selH / 2;
         this.selW = this.cellSize * this.gridCols;
         this.selH = this.cellSize * this.gridRows;
-        this.selX = clamp(centerX - this.selW / 2, 0, this.canvasSide - this.selW);
-        this.selY = clamp(centerY - this.selH / 2, 0, this.canvasSide - this.selH);
+        this.selX = centerX - this.selW / 2;
+        this.selY = centerY - this.selH / 2;
+        this.clampSelectionPos();
+    }
+
+    /** Clamps the selection position into its selectable area. */
+    private void clampSelectionPos() {
+        if (this.splitUploads) {
+            this.selX = clamp(this.selX, this.frameX0(), this.frameX0() + this.frameW() - this.selW);
+            this.selY = clamp(this.selY, this.frameY0(), this.frameY0() + this.frameH() - this.selH);
+        } else {
+            this.selX = clamp(this.selX, 0, this.canvasSide - this.selW);
+            this.selY = clamp(this.selY, 0, this.canvasSide - this.selH);
+        }
     }
 
     /** Grows cells to the 64px preferred size when the canvas allows it. */
@@ -430,10 +446,22 @@ public class ImageCropScreen extends Screen {
         }
         if (this.splitUploads) {
             this.addShapeButtons();
-            this.applyGridClamp();
-        } else if (this.rowsButton != null) {
-            this.rowsButton.visible = false;
-            this.colsButton.visible = false;
+            // Default to the full grid frame: the whole image is covered.
+            this.cellSize = this.maxCellSide();
+            this.applyShape();
+        } else {
+            if (this.rowsButton != null) {
+                this.rowsButton.visible = false;
+                this.colsButton.visible = false;
+            }
+            // Restore a square selection for the single upload path.
+            int side = clamp(Math.min(this.selW, this.selH), MIN_SIZE, this.canvasSide);
+            int centerX = this.selX + this.selW / 2;
+            int centerY = this.selY + this.selH / 2;
+            this.selW = side;
+            this.selH = side;
+            this.selX = clamp(centerX - side / 2, 0, this.canvasSide - side);
+            this.selY = clamp(centerY - side / 2, 0, this.canvasSide - side);
         }
     }
 
@@ -527,14 +555,83 @@ public class ImageCropScreen extends Screen {
         return (this.canvasSide - this.imageHeight) / 2;
     }
 
+    /**
+     * Side of the square preview area. In split mode the rows×cols grid
+     * frame can reach beyond the square canvas, so the preview zooms out to
+     * show the frame; the canvas stays centred in both cases.
+     */
+    private int boundSide() {
+        if (!this.splitUploads) {
+            return this.canvasSide;
+        }
+        return Math.max(this.canvasSide, Math.max(this.frameW(), this.frameH()));
+    }
+
+    /** Offset of the canvas origin inside the preview area (split overhang). */
+    private double originOff() {
+        return (this.boundSide() - this.canvasSide) / 2.0;
+    }
+
+    /** Canvas-space X of a mouse position inside the preview. */
+    private double canvasMouseX(double mouseX) {
+        return (mouseX - this.previewX()) / this.previewScale() - this.originOff();
+    }
+
+    /** Canvas-space Y of a mouse position inside the preview. */
+    private double canvasMouseY(double mouseY) {
+        return (mouseY - this.previewY()) / this.previewScale() - this.originOff();
+    }
+
+    /**
+     * Max cell side in split mode: the smallest cell whose rows×cols frame
+     * still covers the entire image (the image may be centred with
+     * transparent bands where the aspects differ).
+     */
+    private int maxCellSide() {
+        int fitW = ceilDiv(this.imageWidth, this.gridCols);
+        int fitH = ceilDiv(this.imageHeight, this.gridRows);
+        return Math.max(Math.max(fitW, fitH), MIN_SIZE);
+    }
+
+    /** Smallest sensible cell side. */
+    private int minCellSide() {
+        return MIN_SIZE;
+    }
+
+    /**
+     * Side of the rows×cols frame: the grid rectangle covering the whole
+     * image (see {@link #maxCellSide()}).
+     */
+    private int frameW() {
+        return this.maxCellSide() * this.gridCols;
+    }
+
+    private int frameH() {
+        return this.maxCellSide() * this.gridRows;
+    }
+
+    /** Left edge of the frame in canvas coordinates (may be negative). */
+    private int frameX0() {
+        return (this.canvasSide - this.frameW()) / 2;
+    }
+
+    /** Top edge of the frame in canvas coordinates (may be negative). */
+    private int frameY0() {
+        return (this.canvasSide - this.frameH()) / 2;
+    }
+
+    private static int ceilDiv(int value, int divisor) {
+        return (value + divisor - 1) / divisor;
+    }
+
     private double previewScale() {
         int availW = this.width - 40;
         int availH = (this.height - 96) - 30;
-        return Math.min((double) availW / this.canvasSide, (double) availH / this.canvasSide);
+        return Math.min((double) availW / this.boundSide(), (double) availH / this.boundSide());
     }
 
     private int previewDrawW() {
-        return Math.max(1, (int) Math.round(this.canvasSide * this.previewScale()));
+        return Math.max(1, (int) Math.round(this.boundSide() * this.previewScale()));
     }
 
     private int previewDrawH() {
@@ -558,8 +655,9 @@ public class ImageCropScreen extends Screen {
     }
 
     private void centerOn(double canvasX, double canvasY) {
-        this.selX = clamp(Math.round(canvasX - this.selW / 2.0), 0, this.canvasSide - this.selW);
-        this.selY = clamp(Math.round(canvasY - this.selH / 2.0), 0, this.canvasSide - this.selH);
+        this.selX = (int) Math.round(canvasX - this.selW / 2.0);
+        this.selY = (int) Math.round(canvasY - this.selH / 2.0);
+        this.clampSelectionPos();
     }
 
     private static int clamp(long value, int min, int max) {

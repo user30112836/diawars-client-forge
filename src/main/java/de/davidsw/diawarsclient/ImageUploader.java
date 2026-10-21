@@ -59,7 +59,7 @@ public final class ImageUploader {
     public static final String FOLDER_NAME = "diawars-images";
 
     private static final String[] EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp"};
-    private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9 ._-()]{1,32}");
+    private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9 ._()-]{1,32}");
     private static final Gson GSON = new Gson();
 
     private static final Deque<String> QUEUE = new ArrayDeque<>();

@@ -26,11 +26,11 @@ import javax.imageio.ImageIO;
  * wheel over the preview to change its size. The selection may grow to the
  * whole square canvas ("Ganzes Bild"), so the entire image fits without
  * cutting anything off; pixels outside the image become transparent.
- * In split mode (from the upload screen's "Aufteilen" option) the selection
- * is divided into an N×N grid — every cell uploads as its own image named
- * {@code base(k)}, one by one, after the server pre-checks every name.
- * Confirming crops the area and queues the upload at full resolution
- * (see {@link ImageUploader}).
+ * The "Aufteilen" toggle splits the selection into a rows×cols grid (free
+ * shape, e.g. 2×3 or 5×1, via the "Zeilen"/"Spalten" steppers) — every cell
+ * uploads as its own image named {@code base (k)}, one by one, after the
+ * server pre-checks every name. Confirming crops the area and queues the
+ * upload at full resolution (see {@link ImageUploader}).
  */
 public class ImageCropScreen extends Screen {
     private static final Identifier PREVIEW_ID =
@@ -40,10 +40,11 @@ public class ImageCropScreen extends Screen {
     private final File sourceFile;
     private final String uploadName;
 
-    /** Split mode from the upload screen: the selection yields an N×N grid. */
-    private final boolean splitUploads;
-    /** Squares per direction of the grid (2..ImageUploader.MAX_GRID). */
-    private int gridCount = 2;
+    /** Split mode: the selection yields a rows×cols grid of images. */
+    private boolean splitUploads;
+    /** Grid shape, 1..{@link ImageUploader#MAX_GRID} per direction. */
+    private int gridRows = 2;
+    private int gridCols = 2;
 
     private DynamicTexture previewTexture;
     private int imageWidth;
@@ -61,15 +62,16 @@ public class ImageCropScreen extends Screen {
     private Button confirmButton;
     private Button minusButton;
     private Button plusButton;
-    private Button gridButton;
+    private Button splitButton;
+    private Button rowsButton;
+    private Button colsButton;
     private StringWidget infoLine;
     private String lastInfo = "";
 
-    public ImageCropScreen(File sourceFile, String uploadName, boolean splitUploads) {
+    public ImageCropScreen(File sourceFile, String uploadName) {
         super(Component.literal("Bild zuschneiden"));
         this.sourceFile = sourceFile;
         this.uploadName = uploadName;
-        this.splitUploads = splitUploads;
     }
 
     @Override
@@ -86,10 +88,11 @@ public class ImageCropScreen extends Screen {
         this.addRenderableWidget(new StringWidget(20, this.height - 74, this.width - 40, 12,
                 Component.literal("Ziehen: verschieben · Mausrad / − / +: Größe · Ganzes Bild: transparent auffüllen"), this.font));
 
+        this.splitButton = Button.builder(Component.literal(splitToggleLabel()),
+                button -> this.onSplitToggle()).bounds(20, this.height - 60, 130, 20).build();
+        this.addRenderableWidget(this.splitButton);
         if (this.splitUploads) {
-            this.gridButton = Button.builder(Component.literal(gridButtonLabel()),
-                    button -> this.onGridButton()).bounds(20, this.height - 60, 200, 20).build();
-            this.addRenderableWidget(this.gridButton);
+            this.addShapeButtons();
         }
 
         int smallWidth = 44;
@@ -108,7 +111,7 @@ public class ImageCropScreen extends Screen {
                 button -> this.fitWholeImage())
                 .bounds(buttonX + (smallWidth + gap) * 2, buttonY, buttonWidth, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("Zurück"),
-                button -> this.minecraft.setScreenAndShow(new ImageUploadScreen(this.splitUploads)))
+                button -> this.minecraft.setScreenAndShow(new ImageUploadScreen()))
                 .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, buttonWidth, 20).build());
         this.confirmButton = Button.builder(Component.literal("Hochladen"),
                 button -> this.onConfirm())
@@ -194,14 +197,18 @@ public class ImageCropScreen extends Screen {
         this.confirmButton.active = ready;
         this.minusButton.active = ready;
         this.plusButton.active = ready;
-        if (this.gridButton != null) {
-            this.gridButton.active = ready;
+        if (this.splitButton != null) {
+            this.splitButton.active = ready;
+        }
+        if (this.rowsButton != null) {
+            this.rowsButton.active = ready;
+            this.colsButton.active = ready;
         }
         if (ready) {
             String info;
             if (this.splitUploads) {
-                int count = this.gridCount * this.gridCount;
-                info = "\"" + this.uploadName + "\" · " + this.gridCount + "×" + this.gridCount
+                int count = this.gridRows * this.gridCols;
+                info = "\"" + this.uploadName + "\" · " + this.gridRows + "×" + this.gridCols
                         + " Aufteilung → " + count + " Bilder "
                         + ImageUploader.segmentName(this.uploadName, 1) + " … "
                         + ImageUploader.segmentName(this.uploadName, count)
@@ -277,14 +284,15 @@ public class ImageCropScreen extends Screen {
 
         if (this.splitUploads) {
             // Grid lines across the selection: every cell uploads on its own.
-            int lines = this.gridCount;
             int gridColor = 0x90FFFFFF;
-            for (int i = 1; i < lines; i++) {
-                int vx = sx0 + (int) Math.round((this.selSize * (double) i / lines) * scale);
+            for (int i = 1; i < this.gridCols; i++) {
+                int vx = sx0 + (int) Math.round((this.selSize * (double) i / this.gridCols) * scale);
                 if (vx > sx0 && vx < sx1) {
                     extractor.fill(vx, sy0, vx + 1, sy1, gridColor);
                 }
-                int hy = sy0 + (int) Math.round((this.selSize * (double) i / lines) * scale);
+            }
+            for (int i = 1; i < this.gridRows; i++) {
+                int hy = sy0 + (int) Math.round((this.selSize * (double) i / this.gridRows) * scale);
                 if (hy > sy0 && hy < sy1) {
                     extractor.fill(sx0, hy, sx1, hy + 1, gridColor);
                 }
@@ -359,8 +367,9 @@ public class ImageCropScreen extends Screen {
 
     /** Min selection side for the grid: prefers 64px cells, stays within the canvas. */
     private int minSelSide() {
-        int preferred = 64 * this.gridCount;
-        return Math.min(this.canvasSide, Math.max(this.gridCount, preferred));
+        int largest = Math.max(this.gridRows, this.gridCols);
+        int preferred = 64 * largest;
+        return Math.min(this.canvasSide, Math.max(largest, preferred));
     }
 
     /** Grows the selection to the grid minimum, keeping its centre. */
@@ -376,15 +385,54 @@ public class ImageCropScreen extends Screen {
         this.selY = clamp(centerY - min / 2, 0, this.canvasSide - min);
     }
 
-    private String gridButtonLabel() {
-        return "Aufteilung: " + this.gridCount + "×" + this.gridCount
-                + " · " + (this.gridCount * this.gridCount) + " Bilder";
+    private String splitToggleLabel() {
+        return this.splitUploads ? "Aufteilen: An" : "Aufteilen: Aus";
     }
 
-    private void onGridButton() {
-        this.gridCount = this.gridCount >= ImageUploader.MAX_GRID ? 2 : this.gridCount + 1;
-        if (this.gridButton != null) {
-            this.gridButton.setMessage(Component.literal(gridButtonLabel()));
+    /** Creates (or re-shows) the rows/cols steppers when split mode turns on. */
+    private void addShapeButtons() {
+        if (this.rowsButton == null) {
+            this.rowsButton = Button.builder(Component.literal(rowsButtonLabel()),
+                    button -> this.onShapeButton(true)).bounds(156, this.height - 60, 110, 20).build();
+            this.addRenderableWidget(this.rowsButton);
+            this.colsButton = Button.builder(Component.literal(colsButtonLabel()),
+                    button -> this.onShapeButton(false)).bounds(272, this.height - 60, 110, 20).build();
+            this.addRenderableWidget(this.colsButton);
+        } else {
+            this.rowsButton.visible = true;
+            this.colsButton.visible = true;
+        }
+    }
+
+    private void onSplitToggle() {
+        this.splitUploads = !this.splitUploads;
+        if (this.splitButton != null) {
+            this.splitButton.setMessage(Component.literal(splitToggleLabel()));
+        }
+        if (this.splitUploads) {
+            this.addShapeButtons();
+            this.applyGridClamp();
+        } else if (this.rowsButton != null) {
+            this.rowsButton.visible = false;
+            this.colsButton.visible = false;
+        }
+    }
+
+    private String rowsButtonLabel() {
+        return "Zeilen: " + this.gridRows;
+    }
+
+    private String colsButtonLabel() {
+        return "Spalten: " + this.gridCols;
+    }
+
+    private void onShapeButton(boolean rows) {
+        if (rows) {
+            this.gridRows = this.gridRows >= ImageUploader.MAX_GRID ? 1 : this.gridRows + 1;
+            this.rowsButton.setMessage(Component.literal(rowsButtonLabel()));
+        } else {
+            this.gridCols = this.gridCols >= ImageUploader.MAX_GRID ? 1 : this.gridCols + 1;
+            this.colsButton.setMessage(Component.literal(colsButtonLabel()));
         }
         this.applyGridClamp();
     }
@@ -406,7 +454,7 @@ public class ImageCropScreen extends Screen {
                         this.uploadName,
                         new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
                                 this.selY - this.imageOffsetY(), this.selSize),
-                        this.gridCount);
+                        this.gridRows, this.gridCols);
                 if (!ImageUploader.requestSplitUpload(segments)) {
                     String error = ImageUploader.consumeOfferError();
                     this.showConfirmError(error != null ? error : "Upload bereits aktiv.");
@@ -435,7 +483,7 @@ public class ImageCropScreen extends Screen {
             return;
         }
         // Offer errors and progress show on the upload screen.
-        this.minecraft.setScreenAndShow(new ImageUploadScreen(this.splitUploads));
+        this.minecraft.setScreenAndShow(new ImageUploadScreen());
     }
 
     private void showConfirmError(String message) {

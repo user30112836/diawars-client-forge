@@ -16,15 +16,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Forge port of the Fabric {@code ImageUploadScreen}.
+ * Lets the player pick an image from the local file system and upload it to
+ * the Diawars server as a chunked {@code diawars:image} payload.
  *
- * <p>Lets the player pick an image from the local file system and upload it
- * to the Diawars server as a chunked {@code diawars:image} payload. Files can
- * be chosen from the {@code diawars-images} folder inside the game directory
- * (refreshable list) or via an arbitrary path typed into the path field. The
- * upload name defaults to the file name and can be edited. The "Aufteilen"
- * option splits the chosen image into an N×N grid of smaller images, uploaded
- * one by one with a {@code (k)} suffix on the name (see ImageCropScreen).
+ * <p>Files can be chosen from the {@code diawars-images} folder inside the
+ * game directory (refreshable list) or via an arbitrary path typed into the
+ * path field. The upload name defaults to the file name and can be edited.
+ * Splitting into a grid happens on the next screen (see ImageCropScreen).
  * Opened from the server (images menu upload button, {@code /image upload}).
  */
 public class ImageUploadScreen extends Screen {
@@ -46,18 +44,8 @@ public class ImageUploadScreen extends Screen {
     private boolean applyingAutofill;
     private boolean wasSending;
 
-    /** Split option: the image uploads as an N×N grid (see ImageCropScreen). */
-    private boolean splitUploads;
-    private Button splitButton;
-
     public ImageUploadScreen() {
         super(Component.literal("Bilder hochladen"));
-    }
-
-    /** Upload screen with the split option pre-set (from the crop screen's Zurück). */
-    public ImageUploadScreen(boolean splitUploads) {
-        this();
-        this.splitUploads = splitUploads;
     }
 
     @Override
@@ -89,11 +77,11 @@ public class ImageUploadScreen extends Screen {
         this.addRenderableWidget(this.folderLabel);
 
         int listTop = 66;
-        int listBottom = this.height - 132;
+        int listBottom = this.height - 108;
         this.fileList = new FileList(this.minecraft, this.width, listBottom - listTop, listTop);
         this.addRenderableWidget(this.fileList);
 
-        int y = this.height - 124;
+        int y = this.height - 100;
         this.addRenderableWidget(new StringWidget(margin, y, this.width - margin * 2, 10,
                 Component.literal("Eigener Pfad (optional, sonst Auswahl aus der Liste):"), this.font));
         y += 12;
@@ -120,12 +108,8 @@ public class ImageUploadScreen extends Screen {
         });
         this.nameTouched = savedNameTouched;
         this.addRenderableWidget(this.nameField);
-        y += 24;
-        this.splitButton = Button.builder(Component.literal(splitToggleLabel()),
-                button -> this.toggleSplit()).bounds(margin, y, 120, FIELD_HEIGHT).build();
-        this.addRenderableWidget(this.splitButton);
-        y += 24;
-        this.statusLine = new StringWidget(margin, y, this.width - margin * 2, 10,
+        y += 20;
+        this.statusLine = new StringWidget(margin, y, this.width - margin * 2, 12,
                 Component.literal(""), this.font);
         this.addRenderableWidget(this.statusLine);
 
@@ -231,17 +215,6 @@ public class ImageUploadScreen extends Screen {
         this.refreshList();
     }
 
-    private String splitToggleLabel() {
-        return this.splitUploads ? "Aufteilen: An" : "Aufteilen: Aus";
-    }
-
-    private void toggleSplit() {
-        this.splitUploads = !this.splitUploads;
-        if (this.splitButton != null) {
-            this.splitButton.setMessage(Component.literal(splitToggleLabel()));
-        }
-    }
-
     private void updateFolderButtons() {
         String current = this.folder.getAbsolutePath();
         this.gameFolderButton.active = !current.equals(ImageUploader.getFolder(this.minecraft).getAbsolutePath());
@@ -274,7 +247,7 @@ public class ImageUploadScreen extends Screen {
             return;
         }
 
-        this.minecraft.setScreenAndShow(new ImageCropScreen(source, effectiveName, this.splitUploads));
+        this.minecraft.setScreenAndShow(new ImageCropScreen(source, effectiveName));
     }
 
     private void setStatus(String text, ChatFormatting color) {

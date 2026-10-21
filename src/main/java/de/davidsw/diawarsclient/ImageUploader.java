@@ -59,7 +59,7 @@ public final class ImageUploader {
     public static final String FOLDER_NAME = "diawars-images";
 
     private static final String[] EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp"};
-    private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9._()-]{1,32}");
+    private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z0-9 ._-()]{1,32}");
     private static final Gson GSON = new Gson();
 
     private static final Deque<String> QUEUE = new ArrayDeque<>();
@@ -288,13 +288,13 @@ public final class ImageUploader {
 
     private static boolean isNameChar(char c) {
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-                || c == '.' || c == '_' || c == '-' || c == '(' || c == ')';
+                || c == '.' || c == '_' || c == '-' || c == '(' || c == ')' || c == ' ';
     }
 
     /**
      * Returns the sanitized upload name, or null when invalid.
-     * Mirrors the server rules: letters, digits, {@code . _ - ( )}, max 32
-     * chars, and {@code all} is reserved.
+     * Mirrors the server rules: letters, digits, {@code . _ - ( )} and spaces,
+     * max 32 chars, and {@code all} is reserved.
      */
     public static String sanitize(String raw) {
         if (raw == null) {
@@ -354,31 +354,33 @@ public final class ImageUploader {
         return encode(image, name, null);
     }
 
-    /** Max segments of a split upload (5×5 grid; mirrors the server cap). */
+    /** Max squares per direction of a split upload (≤ 25 segments total). */
     public static final int MAX_GRID = 5;
 
     /**
-     * Prepares every cell of an N×N split of the given square crop area as
-     * its own upload, named {@code base(k)} row-major (top-left is 1), each
-     * capped at {@value #SPLIT_MAX_CELL}px per side to keep encodings fast.
-     * The source is decoded once; the segment names are pre-checkable before
-     * anything uploads (see {@link #requestSplitUpload}).
+     * Prepares every cell of a rows×cols split of the given square crop area
+     * as its own upload, named {@code base (k)} row-major (top-left is 1),
+     * each capped at {@value #SPLIT_MAX_CELL}px per side to keep encodings
+     * fast. Rectangular cells are centred on a square canvas (transparent
+     * padding) because every map is 1:1. The source is decoded once; the
+     * segment names are pre-checkable before anything uploads (see
+     * {@link #requestSplitUpload}).
      *
      * @param whole square crop area covering the entire grid (see
      *              ImageCropScreen)
      * @throws IOException              when the file cannot be read as an image
      * @throws IllegalArgumentException when a name/grid/crop is invalid
      */
-    public static List<PreparedUpload> prepareSplit(File file, String baseName, CropArea whole, int n) throws IOException {
-        if (n < 2 || n > MAX_GRID) {
-            throw new IllegalArgumentException("Ungültige Aufteilung.");
+    public static List<PreparedUpload> prepareSplit(File file, String baseName, CropArea whole, int rows, int cols) throws IOException {
+        if (rows < 1 || cols < 1 || rows > MAX_GRID || cols > MAX_GRID || (rows == 1 && cols == 1)) {
+            throw new IllegalArgumentException("Ungültige Aufteilung (1×1 ist kein Split).");
         }
         String base = sanitize(baseName);
         if (base == null) {
-            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - ( ) (max. 32 Zeichen, nicht \"all\").");
+            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - ( ) und Leerzeichen (max. 32 Zeichen, nicht \"all\").");
         }
-        if (whole == null || whole.size() < n) {
-            throw new IllegalArgumentException("Der Ausschnitt ist zu klein für eine " + n + "×" + n + " Aufteilung.");
+        if (whole == null || whole.size() < Math.max(rows, cols)) {
+            throw new IllegalArgumentException("Der Ausschnitt ist zu klein für eine " + rows + "×" + cols + " Aufteilung.");
         }
         validateSource(file);
 
@@ -392,21 +394,30 @@ public final class ImageUploader {
 
         boolean keepAlpha = image.getColorModel().hasAlpha();
         List<PreparedUpload> segments = new ArrayList<>();
-        for (int row = 0; row < n; row++) {
-            for (int col = 0; col < n; col++) {
-                int x = (int) Math.round(col * (double) side / n);
-                int y = (int) Math.round(row * (double) side / n);
-                int width = Math.max(1, (int) Math.round((col + 1) * (double) side / n) - x);
-                int height = Math.max(1, (int) Math.round((row + 1) * (double) side / n) - y);
-                BufferedImage cell = new BufferedImage(width, height,
-                        keepAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
+        for (int row = 0; row < rows; row++) {
+            for (int col = 0; col < cols; col++) {
+                int x = (int) Math.round(col * (double) side / cols);
+                int y = (int) Math.round(row * (double) side / rows);
+                int width = Math.max(1, (int) Math.round((col + 1) * (double) side / cols) - x);
+                int height = Math.max(1, (int) Math.round((row + 1) * (double) side / rows) - y);
+                // Every map is square: rectangular cells are centred on a
+                // square canvas; the padding stays transparent.
+                int canvas = Math.max(width, height);
+                boolean padded = width < canvas || height < canvas;
+                BufferedImage cell = new BufferedImage(canvas, canvas,
+                        keepAlpha || padded ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
                 Graphics2D g = cell.createGraphics();
                 try {
-                    g.drawImage(image, 0, 0, width, height, x, y, x + width, y + height, null);
+                    g.drawImage(image, (canvas - width) / 2, (canvas - height) / 2,
+                            (canvas - width) / 2 + width, (canvas - height) / 2 + height,
+                            x, y, x + width, y + height, null);
                 } finally {
                     g.dispose();
                 }
-                segments.add(encode(cell, segmentName(base, row * n + col + 1), null));
+                if (canvas > SPLIT_MAX_CELL) {
+                    cell = scale(cell, (double) SPLIT_MAX_CELL / canvas);
+                }
+                segments.add(encode(cell, segmentName(base, row * cols + col + 1), null));
             }
         }
         return segments;
@@ -715,21 +726,24 @@ public final class ImageUploader {
     public static String resolveName(File file, String wantedName) {
         String name = wantedName == null || wantedName.isBlank() ? deriveName(file) : sanitize(wantedName);
         if (name == null) {
-            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - ( ) (max. 32 Zeichen, nicht \"all\").");
+            throw new IllegalArgumentException("Ungültiger Name! Erlaubt: Buchstaben, Zahlen, . _ - ( ) und Leerzeichen (max. 32 Zeichen, nicht \"all\").");
         }
         return name;
     }
 
     /**
-     * Builds a split segment name {@code base(k)} (k starts at 1); the base
+     * Builds a split segment name {@code base (k)} (k starts at 1); the base
      * is shortened so the whole name stays inside the 32-char limit.
      */
     public static String segmentName(String base, int index) {
-        String suffix = "(" + index + ")";
+        String suffix = " (" + index + ")";
         String name = base == null ? "" : base;
         int maxBase = 32 - suffix.length();
         if (name.length() > maxBase) {
-            name = name.substring(0, maxBase);
+            name = name.substring(0, maxBase).replaceAll("\\s+$", "");
+        }
+        if (name.isEmpty()) {
+            name = "bild";
         }
         return name + suffix;
     }

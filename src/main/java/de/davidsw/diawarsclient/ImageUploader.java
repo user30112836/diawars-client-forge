@@ -83,6 +83,12 @@ public final class ImageUploader {
     private static volatile long offerSentAt;
     private static volatile boolean waitingForAccept;
     private static volatile String offerError;
+    /** Total chunk count of the newly offered upload, for the HUD overlay. */
+    private static volatile int pendingChunkTotal;
+    /** Last upload error text for the HUD overlay, or null. */
+    private static volatile String overlayError;
+    /** When the overlay error was recorded (see {@link #overlayErrorSince}). */
+    private static volatile long overlayErrorAt;
 
     /** Loader-specific sender for {@code diawars:image_check} documents. */
     public interface CheckSender {
@@ -126,6 +132,8 @@ public final class ImageUploader {
      * {@link #consumeOfferError()} like before.
      */
     private static void recordError(PreparedUpload upload, String message) {
+        overlayError = message;
+        overlayErrorAt = System.currentTimeMillis();
         if (upload != null && upload.report() != null) {
             ErrorFeedback sink = errorFeedback;
             if (sink != null) {
@@ -138,6 +146,8 @@ public final class ImageUploader {
 
     /** Records a split error on the split upload's screen sink. */
     private static void failBatch(String message) {
+        overlayError = message;
+        overlayErrorAt = System.currentTimeMillis();
         offerError = message;
     }
 
@@ -498,6 +508,8 @@ public final class ImageUploader {
         pendingUpload = upload;
         offerSentAt = System.currentTimeMillis();
         waitingForAccept = true;
+        pendingChunkTotal = upload.chunks().size();
+        overlayError = null;
         return true;
     }
 
@@ -553,6 +565,40 @@ public final class ImageUploader {
 
     public static boolean isWaitingForAccept() {
         return waitingForAccept;
+    }
+
+    /**
+     * Overall progress of the running upload as fraction 0..1, or -1 while
+     * nothing uploads or the progress is indeterminate (e.g. no answer to
+     * the offer yet). Feeds the bottom-right HUD overlay.
+     */
+    public static synchronized double uploadProgress() {
+        if (checkingNames) {
+            return -1.0;
+        }
+        int segments = batch != null ? batch.size() : (waitingForAccept || !QUEUE.isEmpty() ? 1 : 0);
+        if (segments == 0) {
+            return -1.0;
+        }
+        if (waitingForAccept) {
+            // Offer sent, no answer yet: the segments before this one moved.
+            return batch != null ? batchNext / (double) segments : -1.0;
+        }
+        int total = pendingChunkTotal;
+        if (total <= 0) {
+            return -1.0;
+        }
+        double intra = Math.min(1.0, (total - QUEUE.size()) / (double) total);
+        return batch != null ? (batchNext - 1 + intra) / segments : Math.min(0.995, intra);
+    }
+
+    /**
+     * Last upload error for the HUD overlay, if it was recorded at or after
+     * {@code sinceMillis}, else null.
+     */
+    public static String overlayErrorSince(long sinceMillis) {
+        String error = overlayError;
+        return error != null && overlayErrorAt >= sinceMillis ? error : null;
     }
 
     /** Returns and clears the last offer error, or null. */
@@ -612,6 +658,7 @@ public final class ImageUploader {
         batchNext = 0;
         checkingNames = true;
         checkSentAt = System.currentTimeMillis();
+        overlayError = null;
         return true;
     }
 
@@ -702,6 +749,7 @@ public final class ImageUploader {
         pendingUpload = null;
         waitingForAccept = false;
         checkingNames = false;
+        pendingChunkTotal = 0;
         clearBatch();
     }
 

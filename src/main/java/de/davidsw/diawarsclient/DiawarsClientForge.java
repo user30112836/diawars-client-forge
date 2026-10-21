@@ -6,6 +6,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.resources.Identifier;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.AddGuiOverlayLayersEvent;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
@@ -240,6 +241,11 @@ public final class DiawarsClientForge {
             }
             return sendReportSubmit(json);
         });
+        // Small bottom-right progress overlay while an image upload runs
+        // (see ImageUploadOverlay); renders nothing once everything is sent.
+        AddGuiOverlayLayersEvent.BUS.addListener(event -> event.getLayeredDraw().add(
+                Identifier.withDefaultNamespace("diawars_image_upload_overlay"),
+                (gg, deltaTracker) -> ImageUploadOverlay.extract(gg)));
     }
 
     public static void sendClientInfo(net.minecraft.network.Connection connection) {

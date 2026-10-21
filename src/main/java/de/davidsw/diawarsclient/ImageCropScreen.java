@@ -535,8 +535,9 @@ public class ImageCropScreen extends Screen {
             this.showConfirmError(e.getMessage());
             return;
         }
-        // Offer errors and progress show on the upload screen.
-        this.minecraft.setScreenAndShow(new ImageUploadScreen());
+        // Offer errors and progress show in the bottom-right HUD overlay
+        // while the dialog stays closed.
+        this.minecraft.gui.setScreen(null);
     }
 
     private void showConfirmError(String message) {

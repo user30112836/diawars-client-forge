@@ -16,9 +16,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.IOException;
-import java.util.List;
-import javax.imageio.ImageIO;
+import java.io.IOException;import javax.imageio.ImageIO;
 
 /**
  * Second upload step: shows the image and lets the player pick the area to
@@ -52,6 +50,10 @@ public class ImageCropScreen extends Screen {
     private int imageHeight;
     private int canvasSide;
     private String loadError;
+    /** True while the preview decodes on the prepare thread. */
+    private boolean loadingPreview;
+    /** Set when the screen is removed; late load results are discarded. */
+    private boolean screenRemoved;
 
     private int selX;
     private int selY;
@@ -80,8 +82,8 @@ public class ImageCropScreen extends Screen {
 
     @Override
     protected void init() {
-        if (this.previewTexture == null && this.loadError == null) {
-            this.loadPreview();
+        if (this.previewTexture == null && this.loadError == null && !this.loadingPreview) {
+            this.startLoading();
         }
         String savedInfo = this.lastInfo;
         this.clearWidgets();
@@ -123,56 +125,81 @@ public class ImageCropScreen extends Screen {
         this.addRenderableWidget(this.confirmButton);
     }
 
-    private void loadPreview() {
-        // Decode once via ImageIO (same decoder as the upload): supports
-        // PNG/JPG/GIF/BMP. The texture keeps the full source resolution and
-        // the GPU scales it when drawing (see extractRenderState), so the
-        // preview always shows the original quality.
-        BufferedImage decoded;
-        try {
-            decoded = ImageIO.read(this.sourceFile);
-        } catch (IOException | RuntimeException e) {
-            decoded = null;
-        }
-        if (decoded == null || decoded.getWidth() < 1 || decoded.getHeight() < 1) {
-            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
+    private void startLoading() {
+        this.loadingPreview = true;
+        final File file = this.sourceFile;
+        // Decode + re-encode off the UI thread ("Weiter" must not freeze
+        // the game); only the GPU texture registration runs on the client
+        // thread (see loadFinished).
+        ImageUploader.runBackground(() -> {
+            NativeImage image = null;
+            String error = null;
+            try {
+                ImageUploader.validateSource(file);
+            } catch (IOException e) {
+                error = e.getMessage();
+            }
+            if (error == null) {
+                try {
+                    BufferedImage decoded = ImageIO.read(file);
+                    if (decoded == null || decoded.getWidth() < 1 || decoded.getHeight() < 1) {
+                        error = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
+                    } else {
+                        // Normalize to RGB first (same as the upload path):
+                        // exotic color models (e.g. CMYK) and transparency
+                        // would break PNG encoding.
+                        BufferedImage rgb = new BufferedImage(decoded.getWidth(), decoded.getHeight(),
+                                BufferedImage.TYPE_INT_RGB);
+                        java.awt.Graphics2D g = rgb.createGraphics();
+                        try {
+                            g.drawImage(decoded, 0, 0, null);
+                        } finally {
+                            g.dispose();
+                        }
+                        ByteArrayOutputStream png = new ByteArrayOutputStream();
+                        if (!ImageIO.write(rgb, "png", png)) {
+                            throw new IOException("encode failed");
+                        }
+                        image = NativeImage.read(new ByteArrayInputStream(png.toByteArray()));
+                        if (image.getWidth() < 1 || image.getHeight() < 1) {
+                            image.close();
+                            image = null;
+                            error = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
+                        }
+                    }
+                } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                    error = "Vorschau konnte nicht erstellt werden (Bild zu groß?).";
+                }
+            }
+            final NativeImage loaded = image;
+            final String loadError = error;
+            this.minecraft.execute(() -> this.loadFinished(loaded, loadError));
+        });
+    }
+
+    /** Installs the decoded preview on the client thread. */
+    private void loadFinished(NativeImage image, String error) {
+        this.loadingPreview = false;
+        if (this.screenRemoved) {
+            if (image != null) {
+                image.close();
+            }
             return;
         }
-        NativeImage image;
-        try {
-            // Normalize to RGB first (same as the upload path): exotic color
-            // models (e.g. CMYK) and transparency would break PNG encoding.
-            BufferedImage rgb = new BufferedImage(decoded.getWidth(), decoded.getHeight(), BufferedImage.TYPE_INT_RGB);
-            java.awt.Graphics2D g = rgb.createGraphics();
-            try {
-                g.drawImage(decoded, 0, 0, null);
-            } finally {
-                g.dispose();
-            }
-            ByteArrayOutputStream png = new ByteArrayOutputStream();
-            if (!ImageIO.write(rgb, "png", png)) {
-                throw new IOException("encode failed");
-            }
-            image = NativeImage.read(new ByteArrayInputStream(png.toByteArray()));
-        } catch (IOException | RuntimeException | OutOfMemoryError e) {
-            this.loadError = "Vorschau konnte nicht erstellt werden (Bild zu groß?).";
+        if (image == null) {
+            this.loadError = error != null ? error : "Vorschau konnte nicht erstellt werden.";
             return;
         }
         this.imageWidth = image.getWidth();
         this.imageHeight = image.getHeight();
-        if (this.imageWidth < 1 || this.imageHeight < 1) {
-            image.close();
-            this.loadError = "Datei ist kein lesbares Bild (PNG/JPG/GIF/BMP erwartet).";
-            return;
-        }
         this.minecraft.getTextureManager().release(PREVIEW_ID);
         this.previewTexture = new DynamicTexture(() -> "diawars crop preview", image);
         this.minecraft.getTextureManager().register(PREVIEW_ID, this.previewTexture);
 
         // The selectable canvas is the smallest square that fits the whole
-        // image; the image is centred inside it. Anything the selection covers
-        // outside the image becomes transparent, so the whole image can be
-        // fitted without cutting it off.
+        // image; the image is centred inside it. Anything the selection
+        // covers outside the image becomes transparent, so the whole image
+        // can be fitted without cutting it off.
         this.canvasSide = Math.max(this.imageWidth, this.imageHeight);
         int size = Math.min(this.imageWidth, this.imageHeight);
         this.selW = size;
@@ -185,6 +212,7 @@ public class ImageCropScreen extends Screen {
     @Override
     public void removed() {
         super.removed();
+        this.screenRemoved = true;
         if (this.previewTexture != null) {
             // DynamicTexture.close also frees its pixels.
             this.previewTexture.close();
@@ -223,6 +251,11 @@ public class ImageCropScreen extends Screen {
                 this.lastInfo = info;
                 this.infoLine.setMessage(Component.literal(info));
             }
+        } else if (this.loadingPreview) {
+            if (!this.lastInfo.isEmpty()) {
+                this.lastInfo = "";
+                this.infoLine.setMessage(Component.literal("Bild wird geladen …"));
+            }
         } else if (this.loadError != null && !this.loadError.equals(this.lastInfo)) {
             this.lastInfo = this.loadError;
             this.infoLine.setMessage(Component.literal(this.loadError).withStyle(ChatFormatting.RED));
@@ -237,6 +270,9 @@ public class ImageCropScreen extends Screen {
             if (this.loadError != null) {
                 extractor.centeredText(this.font, Component.literal(this.loadError).withStyle(ChatFormatting.RED),
                         this.width / 2, this.height / 2, 0xFFFFFFFF);
+            } else if (this.loadingPreview) {
+                extractor.centeredText(this.font, Component.literal("Bild wird geladen …"),
+                        this.width / 2, this.height / 2, 0xFFB0B0B0);
             }
             return;
         }
@@ -501,42 +537,28 @@ public class ImageCropScreen extends Screen {
     }
 
     private void onConfirm() {
+        // Cheap pre-checks up front (file present, name resolvable); the
+        // expensive encoding runs asynchronously and nothing (decode or
+        // upload) starts before the server confirmed the name(s)/limit.
+        ImageUploader.CropArea crop = new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
+                this.selY - this.imageOffsetY(), this.selW, this.selH);
         try {
-            if (this.splitUploads) {
-                List<ImageUploader.PreparedUpload> segments = ImageUploader.prepareSplit(this.sourceFile,
-                        this.uploadName,
-                        new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
-                                this.selY - this.imageOffsetY(), this.selW, this.selH),
-                        this.gridRows, this.gridCols);
-                if (!ImageUploader.requestSplitUpload(segments)) {
-                    String error = ImageUploader.consumeOfferError();
-                    this.showConfirmError(error != null ? error : "Upload bereits aktiv.");
-                    return;
-                }
-            } else {
-                ImageUploader.PreparedUpload upload;
-                try {
-                    upload = ImageUploader.prepare(this.sourceFile, this.uploadName,
-                            new ImageUploader.CropArea(this.selX - this.imageOffsetX(),
-                                    this.selY - this.imageOffsetY(), this.selW, this.selH));
-                } catch (Exception e) {
-                    this.showConfirmError(e.getMessage());
-                    return;
-                }
-                // The offer handshake agrees the part count with the server first;
-                // chunks queue up once the server accepts (shown in the upload screen).
-                if (!ImageUploader.requestUpload(upload)) {
-                    String error = ImageUploader.consumeOfferError();
-                    this.showConfirmError(error != null ? error : "Upload bereits aktiv.");
-                    return;
-                }
-            }
+            ImageUploader.validateSource(this.sourceFile);
         } catch (Exception e) {
             this.showConfirmError(e.getMessage());
             return;
         }
-        // Offer errors and progress show in the bottom-right HUD overlay
-        // while the dialog stays closed.
+        boolean started = this.splitUploads
+                ? ImageUploader.requestSplitUploadAsync(this.sourceFile, this.uploadName, crop,
+                        this.gridRows, this.gridCols)
+                : ImageUploader.requestUploadAsync(this.sourceFile, this.uploadName, crop);
+        if (!started) {
+            String error = ImageUploader.consumeOfferError();
+            this.showConfirmError(error != null ? error : "Upload bereits aktiv.");
+            return;
+        }
+        // Everything else happens in the bottom-right HUD overlay while the
+        // dialog stays closed.
         this.minecraft.gui.setScreen(null);
     }
 

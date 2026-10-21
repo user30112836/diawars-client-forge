@@ -101,15 +101,60 @@ public final class ImageUploader {
         checkSender = sender;
     }
 
+    /** Runs a task on the client thread (loader hook, see {@link #initMainRunner}). */
+    public interface MainRunner {
+        void run(Runnable task);
+    }
+
+    private static volatile MainRunner mainRunner;
+
+    /**
+     * Installs the loader's client-thread hook. Preparing an upload happens
+     * on the {@link #PREPARE_EXECUTOR prepare thread}; sending the offer
+     * must go back through this hook (network sends happen on the client
+     * thread).
+     */
+    public static void initMainRunner(MainRunner runner) {
+        mainRunner = runner;
+    }
+
+    /**
+     * Single background thread for everything expensive around uploads:
+     * image decoding/encoding (offers, split segments) and the crop
+     * preview load. One thread keeps peak memory bounded (16 MB sources).
+     */
+    private static final java.util.concurrent.ExecutorService PREPARE_EXECUTOR =
+            java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "diawars-image-prepare");
+                thread.setDaemon(true);
+                return thread;
+            });
+
+    /** Runs a one-off task (e.g. image decoding) on the prepare thread. */
+    public static void runBackground(Runnable job) {
+        PREPARE_EXECUTOR.execute(job);
+    }
+
     /**
      * Split upload batch state: the name check runs first; once the server
-     * confirms every name, segments are offered one by one (see
-     * {@link #tickBatch()}). All batch fields are guarded by the class lock.
+     * confirms every name, segments are prepared and offered one by one
+     * (see {@link #tickBatch()}). All batch fields are guarded by the class
+     * lock.
      */
     private static List<PreparedUpload> batch;
     private static int batchNext;
     private static volatile boolean checkingNames;
     private static volatile long checkSentAt;
+
+    /** Split parameters kept while the server pre-checks the names. */
+    private record SplitRequest(File file, String baseName, CropArea crop, int rows, int cols) {
+    }
+
+    private static volatile SplitRequest splitRequest;
+    /** True while the prepare thread is decoding/encoding an upload. */
+    private static volatile boolean preparing;
+    /** Bumped whenever upload state resets; stale prepare jobs are dropped. */
+    private static volatile long prepareEpoch;
 
     public static void initOfferSender(OfferSender sender) {
         offerSender = sender;
@@ -155,6 +200,13 @@ public final class ImageUploader {
     private static void clearBatch() {
         batch = null;
         batchNext = 0;
+    }
+
+    /** Cancels a running split upload at any phase (check, prepare, batch). */
+    private static synchronized void abortSplit() {
+        clearBatch();
+        splitRequest = null;
+        preparing = false;
     }
 
     /**
@@ -543,9 +595,7 @@ public final class ImageUploader {
             // Server messages use MiniMessage tags; chat/screen shows plain text.
             recordError(pending, error.replaceAll("<[^>]*>", ""));
             // A rejected segment cancels the rest of a split upload.
-            synchronized (ImageUploader.class) {
-                clearBatch();
-            }
+            abortSplit();
         }
     }
 
@@ -557,9 +607,7 @@ public final class ImageUploader {
             waitingForAccept = false;
             recordError(pending, "Der Server antwortet nicht auf den Upload.");
             // A segment that never gets accepted cancels the rest of a split.
-            synchronized (ImageUploader.class) {
-                clearBatch();
-            }
+            abortSplit();
         }
     }
 
@@ -635,8 +683,113 @@ public final class ImageUploader {
      * with an error (nothing is uploaded). Returns false (and records an
      * error) when another upload is still active.
      */
-    public static synchronized boolean requestSplitUpload(List<PreparedUpload> segments) {
-        if (checkingNames || waitingForAccept || hasQueued() || batch != null) {
+    /** True while any upload phase is running (prepare, check, offer, send). */
+    private static synchronized boolean uploadBusy() {
+        return checkingNames || waitingForAccept || !QUEUE.isEmpty() || batch != null || preparing;
+    }
+
+    /** Marks the prepare phase as running and returns its epoch. */
+    private static synchronized long beginPrepare() {
+        preparing = true;
+        overlayError = null;
+        return ++prepareEpoch;
+    }
+
+    private static synchronized void preparingDone() {
+        preparing = false;
+    }
+
+    /** True while the prepare thread is decoding/encoding an upload. */
+    public static synchronized boolean isPreparing() {
+        return preparing;
+    }
+
+    private static void runOnMain(Runnable task) {
+        MainRunner runner = mainRunner;
+        if (runner != null) {
+            runner.run(task);
+        } else {
+            task.run();
+        }
+    }
+
+    /**
+     * Records a prepare failure: clears the phase, shows the error (overlay
+     * + screens) and discards any pending split request.
+     */
+    private static synchronized void prepareFailed(long epoch, String message) {
+        if (epoch != prepareEpoch) {
+            return;
+        }
+        preparing = false;
+        splitRequest = null;
+        recordError(null, message != null ? message : "Bild konnte nicht gelesen werden.");
+    }
+
+    /**
+     * Installs the prepared segments unless a newer request superseded
+     * them; the next {@link #tickBatch()} then offers the first segment.
+     */
+    private static synchronized void completeSplitPrepare(long epoch, List<PreparedUpload> segments) {
+        if (epoch != prepareEpoch) {
+            return;
+        }
+        preparing = false;
+        if (segments == null || segments.isEmpty()) {
+            splitRequest = null;
+            failBatch("Die Aufteilung konnte nicht erstellt werden.");
+            return;
+        }
+        batch = segments;
+        batchNext = 0;
+    }
+
+    /**
+     * Starts a single upload: the image is prepared (decoded, cropped,
+     * scaled, hashed) on the prepare thread so the UI never blocks, then
+     * offered from the client thread. The server checks the image limit at
+     * the offer, before any image data moves. Returns false (and records
+     * an error) when another upload is still active.
+     */
+    public static boolean requestUploadAsync(File file, String wantedName, CropArea crop) {
+        if (uploadBusy()) {
+            offerError = "Bereits ein Upload aktiv, bitte warten.";
+            return false;
+        }
+        long epoch = beginPrepare();
+        runBackground(() -> {
+            try {
+                PreparedUpload upload = prepare(file, wantedName, crop);
+                runOnMain(() -> {
+                    if (epoch != prepareEpoch) {
+                        return;
+                    }
+                    preparingDone();
+                    if (!requestUpload(upload)) {
+                        String error = consumeOfferError();
+                        recordError(upload, error != null ? error : "Der Upload konnte nicht gestartet werden.");
+                    }
+                });
+            } catch (Exception | OutOfMemoryError e) {
+                prepareFailed(epoch, e.getMessage());
+            }
+        });
+        return true;
+    }
+
+    /**
+     * Starts a split upload: every segment name is pre-checked with the
+     * server BEFORE anything is prepared or uploaded — if any name is
+     * invalid/taken or the image limit has no headroom for the whole grid,
+     * the upload is cancelled with an error and nothing was encoded. After
+     * the server confirms (see {@link #handleCheckOk(String)}), the
+     * segments are prepared on the prepare thread and offered one by one.
+     * Returns false (and records an error) when another upload is still
+     * active.
+     */
+    public static synchronized boolean requestSplitUploadAsync(File file, String baseName, CropArea crop,
+            int rows, int cols) {
+        if (uploadBusy()) {
             offerError = "Bereits ein Upload aktiv, bitte warten.";
             return false;
         }
@@ -645,8 +798,8 @@ public final class ImageUploader {
             return false;
         }
         com.google.gson.JsonArray names = new com.google.gson.JsonArray();
-        for (PreparedUpload segment : segments) {
-            names.add(segment.fileName());
+        for (int index = 1; index <= rows * cols; index++) {
+            names.add(segmentName(baseName, index));
         }
         JsonObject json = new JsonObject();
         json.add("names", names);
@@ -654,7 +807,8 @@ public final class ImageUploader {
             offerError = "Der Upload konnte nicht gestartet werden (keine Verbindung?).";
             return false;
         }
-        batch = segments;
+        splitRequest = new SplitRequest(file, baseName, crop, rows, cols);
+        batch = null;
         batchNext = 0;
         checkingNames = true;
         checkSentAt = System.currentTimeMillis();
@@ -663,9 +817,10 @@ public final class ImageUploader {
     }
 
     /**
-     * Handles one {@code diawars:image_check_ok} document: on ok the first
-     * segment is offered on the next tick, otherwise the whole split upload
-     * is cancelled (nothing was uploaded).
+     * Handles one {@code diawars:image_check_ok} document: on ok the
+     * segments are prepared on the prepare thread and the first one is
+     * offered on a later tick; otherwise the whole split upload is
+     * cancelled (nothing was uploaded or encoded).
      */
     public static synchronized void handleCheckOk(String json) {
         if (!checkingNames) {
@@ -678,7 +833,22 @@ public final class ImageUploader {
             boolean ok = root != null && root.has("ok") && root.get("ok").isJsonPrimitive()
                     && root.get("ok").getAsBoolean();
             if (ok) {
-                // batch + batchNext stay; tickBatch offers segment 1 next tick.
+                SplitRequest request = splitRequest;
+                if (request == null) {
+                    failBatch("Die Aufteilung ist nicht mehr aktuell.");
+                    return;
+                }
+                long epoch = beginPrepare();
+                runBackground(() -> {
+                    try {
+                        List<PreparedUpload> segments = prepareSplit(request.file(), request.baseName(),
+                                request.crop(), request.rows(), request.cols());
+                        completeSplitPrepare(epoch, segments);
+                    } catch (Exception | OutOfMemoryError e) {
+                        prepareFailed(epoch, e.getMessage() != null
+                                ? e.getMessage() : "Die Aufteilung konnte nicht erstellt werden.");
+                    }
+                });
                 return;
             }
             error = root != null && root.has("error") && root.get("error").isJsonPrimitive()
@@ -688,6 +858,7 @@ public final class ImageUploader {
         }
         // Server messages use MiniMessage tags; chat/screen shows plain text.
         failBatch(error.replaceAll("<[^>]*>", ""));
+        splitRequest = null;
     }
 
     /**
@@ -699,6 +870,7 @@ public final class ImageUploader {
         if (checkingNames) {
             if (System.currentTimeMillis() - checkSentAt > CHECK_TIMEOUT_MILLIS) {
                 clearBatch();
+                splitRequest = null;
                 failBatch("Der Server antwortet nicht (Namenprüfung).");
             }
             return;
@@ -750,6 +922,9 @@ public final class ImageUploader {
         waitingForAccept = false;
         checkingNames = false;
         pendingChunkTotal = 0;
+        preparing = false;
+        splitRequest = null;
+        prepareEpoch++;
         clearBatch();
     }
 

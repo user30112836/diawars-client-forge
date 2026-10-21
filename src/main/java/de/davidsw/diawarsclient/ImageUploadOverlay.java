@@ -46,19 +46,27 @@ public final class ImageUploadOverlay {
             accent = 0xFFFF5555;
             progress = -1.0;
         } else {
+            boolean preparing = ImageUploader.isPreparing();
             progress = ImageUploader.uploadProgress();
-            if (progress < 0.0) {
+            boolean waiting = ImageUploader.isWaitingForAccept() || ImageUploader.isCheckingNames();
+            if (progress < 0.0 && !preparing && !waiting) {
                 return;
             }
             accent = 0xFF62E05F;
-            int segments = ImageUploader.batchSegmentCount();
-            if (ImageUploader.isCheckingNames()) {
+            if (preparing) {
+                label = "Bild wird vorbereitet …";
+            } else if (ImageUploader.isCheckingNames()) {
                 label = "Aufteilung wird geprüft …";
-            } else if (segments > 0) {
-                label = "Bild-Upload Teil " + ImageUploader.batchCurrentSegment() + "/" + segments
-                        + ": " + percent(progress) + "%";
             } else {
-                label = "Bild-Upload: " + percent(progress) + "%";
+                int segments = ImageUploader.batchSegmentCount();
+                if (segments > 0) {
+                    label = "Bild-Upload Teil " + ImageUploader.batchCurrentSegment() + "/" + segments
+                            + ": " + percent(progress) + "%";
+                } else if (progress >= 0.0) {
+                    label = "Bild-Upload: " + percent(progress) + "%";
+                } else {
+                    label = "Warte auf Server …";
+                }
             }
         }
 

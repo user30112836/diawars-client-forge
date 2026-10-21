@@ -235,6 +235,9 @@ public final class DiawarsClientForge {
         // Report screenshots upload without a screen; failures go to chat.
         ImageUploader.initErrorFeedback(message -> Minecraft.getInstance().execute(() ->
                 Minecraft.getInstance().showDebugChat(Component.literal(message))));
+        // Uploads prepare on the background thread; the offer send hops back
+        // to the client thread through this hook.
+        ImageUploader.initMainRunner(Minecraft.getInstance()::execute);
         ReportDialogScreen.initSubmitSender(json -> {
             if (!canSendImages()) {
                 return false;

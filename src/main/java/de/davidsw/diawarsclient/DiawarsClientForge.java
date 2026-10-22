@@ -92,6 +92,34 @@ public final class DiawarsClientForge {
                         // Client never receives report submits; only sends them.
                     }
             )
+            .add(
+                    HandshakePayload.TYPE,
+                    HandshakePayload.CODEC,
+                    (payload, context) -> {
+                        // Client never receives handshake probes; only sends them.
+                    }
+            )
+            .build();
+
+    /**
+     * Clientbound channel for the handshake: the plugin answers the mod's
+     * {@code diawars:handshake} probe with an empty
+     * {@code diawars:handshake_ack}, confirming that it is installed
+     * (see {@link ServerHandshake}). Only sent unsolicited by nobody — the
+     * mod keeps silent on foreign servers and re-probes on world changes.
+     */
+    private static final Channel<CustomPacketPayload> HANDSHAKE_CHANNEL = ChannelBuilder
+            .named(Identifier.fromNamespaceAndPath(MOD_ID, "handshake"))
+            .optional()
+            .networkProtocolVersion(1)
+            .payloadChannel()
+            .protocol(NetworkProtocol.PLAY)
+            .flow(PacketFlow.CLIENTBOUND)
+            .add(
+                    HandshakeAckPayload.TYPE,
+                    HandshakeAckPayload.CODEC,
+                    (payload, context) -> context.enqueueWork(() -> ServerHandshake.onAck())
+            )
             .build();
 
     /**
@@ -113,20 +141,35 @@ public final class DiawarsClientForge {
             .add(
                     ImageDataPayload.TYPE,
                     ImageDataPayload.CODEC,
-                    (payload, context) -> context.enqueueWork(() ->
-                            ImageDownloader.handleDataJson(Minecraft.getInstance(), payload.json()))
+                    (payload, context) -> {
+                        if (!ServerHandshake.isActive()) {
+                            return;
+                        }
+                        context.enqueueWork(() ->
+                                ImageDownloader.handleDataJson(Minecraft.getInstance(), payload.json()));
+                    }
             )
             .add(
                     ImageAcceptPayload.TYPE,
                     ImageAcceptPayload.CODEC,
-                    (payload, context) -> context.enqueueWork(() ->
-                            ImageUploader.handleAccept(payload.json()))
+                    (payload, context) -> {
+                        if (!ServerHandshake.isActive()) {
+                            return;
+                        }
+                        context.enqueueWork(() ->
+                                ImageUploader.handleAccept(payload.json()));
+                    }
             )
             .add(
                     ImageCheckOkPayload.TYPE,
                     ImageCheckOkPayload.CODEC,
-                    (payload, context) -> context.enqueueWork(() ->
-                            ImageUploader.handleCheckOk(payload.json()))
+                    (payload, context) -> {
+                        if (!ServerHandshake.isActive()) {
+                            return;
+                        }
+                        context.enqueueWork(() ->
+                                ImageUploader.handleCheckOk(payload.json()));
+                    }
             )
             .build();
 
@@ -145,7 +188,11 @@ public final class DiawarsClientForge {
             .add(
                     ImageOpenPayload.TYPE,
                     ImageOpenPayload.CODEC,
-                    (payload, context) -> pendingOpenUploadScreen = true
+                    (payload, context) -> {
+                        if (ServerHandshake.isActive()) {
+                            pendingOpenUploadScreen = true;
+                        }
+                    }
             )
             .build();
 
@@ -166,7 +213,11 @@ public final class DiawarsClientForge {
             .add(
                     TextInputPayload.TYPE,
                     TextInputPayload.CODEC,
-                    (payload, context) -> pendingTextInputJson = payload.json()
+                    (payload, context) -> {
+                        if (ServerHandshake.isActive()) {
+                            pendingTextInputJson = payload.json();
+                        }
+                    }
             )
             .build();
 
@@ -186,7 +237,11 @@ public final class DiawarsClientForge {
             .add(
                     ScreenshotPayload.TYPE,
                     ScreenshotPayload.CODEC,
-                    (payload, context) -> pendingScreenshotJson = payload.json()
+                    (payload, context) -> {
+                        if (ServerHandshake.isActive()) {
+                            pendingScreenshotJson = payload.json();
+                        }
+                    }
             )
             .build();
 
@@ -206,12 +261,24 @@ public final class DiawarsClientForge {
             .add(
                     ReportDialogPayload.TYPE,
                     ReportDialogPayload.CODEC,
-                    (payload, context) -> pendingReportDialogJson = payload.json()
+                    (payload, context) -> {
+                        if (ServerHandshake.isActive()) {
+                            pendingReportDialogJson = payload.json();
+                        }
+                    }
             )
             .build();
 
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
         LOGGER.info("Diawars Client (Forge) initialized.");
+        // The handshake decides whether this server has the Diawars plugin —
+        // every send path below checks ServerHandshake.isActive() first.
+        ServerHandshake.init(
+                () -> sendHandshakeProbe(),
+                () -> {
+                    // First confirmed probe per connection: announce the client.
+                    sendClientInfo();
+                });
         ImageDownloader.init(json -> {
             if (!canSendImages()) {
                 return false;
@@ -251,15 +318,6 @@ public final class DiawarsClientForge {
                 (gg, deltaTracker) -> ImageUploadOverlay.extract(gg)));
     }
 
-    public static void sendClientInfo(net.minecraft.network.Connection connection) {
-        try {
-            String json = ClientInfoCollector.collectAsJson();
-            CHANNEL.send(new ClientInfoPayload(json), connection);
-        } catch (Exception | LinkageError e) {
-            LOGGER.warn("Failed to send diawars client_info packet.", e);
-        }
-    }
-
     /**
      * Set when the server asks us to open the upload UI (via the
      * {@code diawars:image_open} signal, e.g. from the images menu or
@@ -297,6 +355,38 @@ public final class DiawarsClientForge {
             CHANNEL.send(new ImagePayload(json), minecraft.getConnection().getConnection());
         } catch (Exception | LinkageError e) {
             LOGGER.warn("Failed to send diawars image packet.", e);
+        }
+    }
+
+    /**
+     * Sends the serverbound handshake probe. Returns false when nothing
+     * could be sent (disconnected), which keeps the probe handler simple.
+     */
+    private static boolean sendHandshakeProbe() {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return false;
+            }
+            CHANNEL.send(new HandshakePayload(), minecraft.getConnection().getConnection());
+            return true;
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars handshake packet.", e);
+            return false;
+        }
+    }
+
+    /** Collects and sends the {@code diawars:client_info} document after the handshake confirmed the plugin. */
+    private static void sendClientInfo() {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return;
+            }
+            String json = ClientInfoCollector.collectAsJson();
+            CHANNEL.send(new ClientInfoPayload(json), minecraft.getConnection().getConnection());
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars client_info packet.", e);
         }
     }
 
@@ -356,8 +446,11 @@ public final class DiawarsClientForge {
         }
     }
 
-    /** Whether image chunks can currently be sent (connected to a server). */
+    /** Whether image chunks can currently be sent (plugin confirmed + connected). */
     public static boolean canSendImages() {
+        if (!ServerHandshake.isActive()) {
+            return false;
+        }
         try {
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft.getConnection() == null) {
@@ -375,20 +468,24 @@ public final class DiawarsClientForge {
         @SubscribeEvent
         public static void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
             if (event.getConnection() == null) {
-                LOGGER.warn("No connection available, skipping diawars client_info packet.");
+                LOGGER.warn("No connection available, skipping diawars handshake probe.");
                 return;
             }
-            sendClientInfo(event.getConnection());
+            ServerHandshake.onJoined();
+            // Probe for the Diawars plugin; client_info follows after the ack.
+            sendHandshakeProbe();
         }
 
         @SubscribeEvent
         public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+            ServerHandshake.onDisconnected();
             ImageUploader.clearQueue();
             ImageDownloader.clearSession(Minecraft.getInstance());
         }
 
         @SubscribeEvent
         public static void onClientTick(TickEvent.ClientTickEvent.Post event) {
+            ServerHandshake.tick(Minecraft.getInstance());
             if (pendingOpenUploadScreen) {
                 pendingOpenUploadScreen = false;
                 Minecraft minecraft = Minecraft.getInstance();
@@ -428,8 +525,7 @@ public final class DiawarsClientForge {
             }
             ImageDownloader.tick(Minecraft.getInstance());
             ImageUploader.tickOffer();
-            if (ImageUploader.hasQueued() && canSendImages()) {
-                int sent = 0;
+            if (ImageUploader.hasQueued() && canSendImages()) {                int sent = 0;
                 while (sent < 8 && ImageUploader.hasQueued()) {
                     sendImage(ImageUploader.poll());
                     sent++;

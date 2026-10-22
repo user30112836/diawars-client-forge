@@ -72,8 +72,10 @@ public final class ServerHandshake {
     }
 
     /**
-     * Client joined a server: waits for the ack (the probe itself is sent by
-     * the loader's join event, where it can go out first over the wire).
+     * Client joined a server: waits for the ack. The probe itself is sent by
+     * {@link #tick} on the first world sighting — one tick after the join —
+     * so the client's channel registration packet is already on the wire and
+     * the plugin's ack is not silently dropped.
      */
     public static void onJoined() {
         state = State.WAITING_NEW;
@@ -108,9 +110,10 @@ public final class ServerHandshake {
     }
 
     /**
-     * Per-tick duty: probes again on world change and disables itself once a
-     * probe has timed out. Call on the client thread every tick while
-     * connected.
+     * Per-tick duty: sends the join probe on the first world sighting
+     * (after the loader's channel registration), probes again on world
+     * change and disables itself once a probe has timed out. Call on the
+     * client thread every tick while connected.
      */
     public static void tick(Minecraft minecraft) {
         State current = state;
@@ -124,8 +127,12 @@ public final class ServerHandshake {
         ResourceKey<Level> dimension = minecraft.player.level().dimension();
         ResourceKey<Level> previous = lastDimension;
         if (previous == null) {
-            // First world sighting after join; the join probe already went out.
             lastDimension = dimension;
+            // First world sighting after join: the join probe goes out here,
+            // one tick after the JOIN event, so the channel registration
+            // packet Fabric queues behind the JOIN handlers has already been
+            // sent and the plugin's ack channel is known server-side.
+            requestProbe();
         } else if (!previous.equals(dimension)) {
             lastDimension = dimension;
             // Todo's retry rule: leaving for another world/server probes again.

@@ -525,13 +525,12 @@ public final class DiawarsClientForge {
     public static class ClientEvents {
         @SubscribeEvent
         public static void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
-            if (event.getConnection() == null) {
-                LOGGER.warn("No connection available, skipping diawars handshake probe.");
-                return;
-            }
+            // Only the state; the probe itself is sent by ServerHandshake.tick()
+            // on the first world sighting, once any channel negotiation has
+            // settled — the plugin answers the probe instantly, and an ack
+            // sent before the client registered its receivable channels is
+            // dropped server-side. client_info follows after the ack.
             ServerHandshake.onJoined();
-            // Probe for the Diawars plugin; client_info follows after the ack.
-            sendHandshakeProbe();
         }
 
         @SubscribeEvent

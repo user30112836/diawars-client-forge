@@ -60,14 +60,18 @@ public class ImageUploadScreen extends Screen {
         this.clearWidgets();
 
         int margin = 20;
-        int presetWidths = 90 + 70 + 90 + 8 * 2;
-        int presetX = (this.width - presetWidths) / 2;
+        // Scale the preset row down on narrow GUI widths (see UiFit).
+        int[] presets = UiFit.fit(new int[]{90, 70, 90}, 8, this.width - margin * 2, 30, 4);
+        int presetRowWidth = presets[0] + presets[1] + presets[2] + presets[3] * 2;
+        int presetX = (this.width - presetRowWidth) / 2;
         this.gameFolderButton = Button.builder(Component.literal("Game-Ordner"),
-                button -> this.setFolder(gameFolder)).bounds(presetX, 28, 90, 20).build();
+                button -> this.setFolder(gameFolder)).bounds(presetX, 28, presets[0], 20).build();
         this.picturesButton = Button.builder(Component.literal("Bilder"),
-                button -> this.setFolder(ImageUploader.getPicturesFolder())).bounds(presetX + 98, 28, 70, 20).build();
+                button -> this.setFolder(ImageUploader.getPicturesFolder()))
+                .bounds(presetX + presets[0] + presets[3], 28, presets[1], 20).build();
         this.downloadsButton = Button.builder(Component.literal("Downloads"),
-                button -> this.setFolder(ImageUploader.getDownloadsFolder())).bounds(presetX + 176, 28, 90, 20).build();
+                button -> this.setFolder(ImageUploader.getDownloadsFolder()))
+                .bounds(presetX + presets[0] + presets[3] + presets[1] + presets[3], 28, presets[2], 20).build();
         this.addRenderableWidget(this.gameFolderButton);
         this.addRenderableWidget(this.picturesButton);
         this.addRenderableWidget(this.downloadsButton);
@@ -113,17 +117,20 @@ public class ImageUploadScreen extends Screen {
                 Component.literal(""), this.font);
         this.addRenderableWidget(this.statusLine);
 
-        int buttonWidth = 110;
-        int gap = 8;
-        int rowWidth = buttonWidth * 3 + gap * 2;
+        // Scale the button row down on narrow GUI widths (see UiFit).
+        int[] buttons = UiFit.fit(new int[]{110, 110, 110}, 8, this.width - 20, 30, 4);
+        int rowWidth = buttons[0] + buttons[1] + buttons[2] + buttons[3] * 2;
         int buttonX = (this.width - rowWidth) / 2;
         int buttonY = this.height - 30;
         this.addRenderableWidget(Button.builder(Component.literal("Schließen"),
-                button -> this.onClose()).bounds(buttonX, buttonY, buttonWidth, 20).build());
+                button -> this.onClose())
+                .bounds(buttonX, buttonY, buttons[0], 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("Aktualisieren"),
-                button -> this.refreshList()).bounds(buttonX + buttonWidth + gap, buttonY, buttonWidth, 20).build());
+                button -> this.refreshList())
+                .bounds(buttonX + buttons[0] + buttons[3], buttonY, buttons[1], 20).build());
         this.uploadButton = Button.builder(Component.literal("Weiter"),
-                button -> this.onUpload()).bounds(buttonX + (buttonWidth + gap) * 2, buttonY, buttonWidth, 20).build();
+                button -> this.onUpload())
+                .bounds(buttonX + buttons[0] + buttons[3] + buttons[1] + buttons[3], buttonY, buttons[2], 20).build();
         this.addRenderableWidget(this.uploadButton);
 
         this.refreshList();

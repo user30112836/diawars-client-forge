@@ -10,6 +10,7 @@ import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
 
 import java.awt.image.BufferedImage;
@@ -71,6 +72,12 @@ public class ImageCropScreen extends Screen {
     private Button splitButton;
     private Button rowsButton;
     private Button colsButton;
+    /** Left edge and width of the split steppers, laid out in init(). */
+    private int rowsX;
+    private int colsX;
+    private int stepperWidth;
+    /** False after an init() re-run until the steppers are re-added. */
+    private boolean steppersAttached;
     private StringWidget infoLine;
     private String lastInfo = "";
 
@@ -87,42 +94,66 @@ public class ImageCropScreen extends Screen {
         }
         String savedInfo = this.lastInfo;
         this.clearWidgets();
+        this.steppersAttached = false;
+
+        // Scale the two button rows down on narrow GUI widths (see UiFit):
+        // 4:3/5:4 screens or large GUI scale make the GUI much narrower than
+        // the 16:9 layout the fixed rows were designed for.
+        int[] bottom = UiFit.fit(new int[]{44, 44, 110, 110, 110}, 8, Math.max(1, this.width - 20), 30, 2);
+        int[] split = UiFit.fit(new int[]{130, 110, 110}, 6, Math.max(1, this.width - 20), 40, 4);
 
         this.infoLine = new StringWidget(20, this.height - 88, this.width - 40, 12,
                 Component.literal(savedInfo), this.font);
         this.addRenderableWidget(this.infoLine);
         this.addRenderableWidget(new StringWidget(20, this.height - 74, this.width - 40, 12,
-                Component.literal("Ziehen: verschieben · Mausrad / − / +: Größe · Ganzes Bild: transparent auffüllen"), this.font));
+                this.clippedText("Ziehen: verschieben · Mausrad / − / +: Größe · Ganzes Bild: transparent auffüllen"),
+                this.font));
 
         this.splitButton = Button.builder(Component.literal(splitToggleLabel()),
-                button -> this.onSplitToggle()).bounds(20, this.height - 60, 130, 20).build();
+                button -> this.onSplitToggle()).bounds(20, this.height - 60, split[0], 20).build();
         this.addRenderableWidget(this.splitButton);
+        this.rowsX = 20 + split[0] + split[3];
+        this.colsX = this.rowsX + split[1] + split[3];
+        this.stepperWidth = split[1];
         if (this.splitUploads) {
             this.addShapeButtons();
         }
 
-        int smallWidth = 44;
-        int buttonWidth = 110;
-        int gap = 8;
-        int rowWidth = smallWidth * 2 + buttonWidth * 3 + gap * 4;
+        int smallWidth = bottom[0];
+        int buttonWidth = bottom[2];
+        int gap = bottom[5];
+        int rowWidth = bottom[0] + bottom[1] + bottom[2] + bottom[3] + bottom[4] + gap * 4;
         int buttonX = (this.width - rowWidth) / 2;
         int buttonY = this.height - 30;
         this.minusButton = Button.builder(Component.literal("−"),
                 button -> this.resizeBy(-1)).bounds(buttonX, buttonY, smallWidth, 20).build();
         this.addRenderableWidget(this.minusButton);
         this.plusButton = Button.builder(Component.literal("+"),
-                button -> this.resizeBy(1)).bounds(buttonX + smallWidth + gap, buttonY, smallWidth, 20).build();
+                button -> this.resizeBy(1)).bounds(buttonX + smallWidth + gap, buttonY, bottom[1], 20).build();
         this.addRenderableWidget(this.plusButton);
         this.addRenderableWidget(Button.builder(Component.literal("Ganzes Bild"),
                 button -> this.fitWholeImage())
                 .bounds(buttonX + (smallWidth + gap) * 2, buttonY, buttonWidth, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("Zurück"),
                 button -> this.minecraft.setScreenAndShow(new ImageUploadScreen()))
-                .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, buttonWidth, 20).build());
+                .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, bottom[3], 20).build());
         this.confirmButton = Button.builder(Component.literal("Hochladen"),
                 button -> this.onConfirm())
-                .bounds(buttonX + (smallWidth + gap) * 2 + (buttonWidth + gap) * 2, buttonY, buttonWidth, 20).build();
+                .bounds(buttonX + (smallWidth + gap) * 2 + (buttonWidth + gap) * 2, buttonY, bottom[4], 20).build();
         this.addRenderableWidget(this.confirmButton);
+    }
+
+    /**
+     * Cuts a hint/info text with "…" so it cannot render past the right
+     * edge on narrow GUI widths (StringWidget does not clip by itself).
+     */
+    private MutableComponent clippedText(String text) {
+        int maxWidth = this.width - 40;
+        if (this.font.width(text) <= maxWidth) {
+            return Component.literal(text);
+        }
+        int usable = Math.max(10, maxWidth - this.font.width("…"));
+        return Component.literal(this.font.plainSubstrByWidth(text, usable) + "…");
     }
 
     private void startLoading() {
@@ -249,7 +280,7 @@ public class ImageCropScreen extends Screen {
             }
             if (!info.equals(this.lastInfo)) {
                 this.lastInfo = info;
-                this.infoLine.setMessage(Component.literal(info));
+                this.infoLine.setMessage(this.clippedText(info));
             }
         } else if (this.loadingPreview) {
             if (!this.lastInfo.isEmpty()) {
@@ -258,7 +289,7 @@ public class ImageCropScreen extends Screen {
             }
         } else if (this.loadError != null && !this.loadError.equals(this.lastInfo)) {
             this.lastInfo = this.loadError;
-            this.infoLine.setMessage(Component.literal(this.loadError).withStyle(ChatFormatting.RED));
+            this.infoLine.setMessage(this.clippedText(this.loadError).withStyle(ChatFormatting.RED));
         }
     }
 
@@ -460,19 +491,30 @@ public class ImageCropScreen extends Screen {
         return this.splitUploads ? "Aufteilen: An" : "Aufteilen: Aus";
     }
 
-    /** Creates (or re-shows) the rows/cols steppers when split mode turns on. */
+    /**
+     * Creates (or re-shows) the rows/cols steppers when split mode turns
+     * on. Positions come from init()'s row layout; after an init() re-run
+     * (i.e. a window resize) the buttons are re-added, since clearWidgets
+     * detached them.
+     */
     private void addShapeButtons() {
         if (this.rowsButton == null) {
             this.rowsButton = Button.builder(Component.literal(rowsButtonLabel()),
-                    button -> this.onShapeButton(true)).bounds(156, this.height - 60, 110, 20).build();
-            this.addRenderableWidget(this.rowsButton);
+                    button -> this.onShapeButton(true)).build();
             this.colsButton = Button.builder(Component.literal(colsButtonLabel()),
-                    button -> this.onShapeButton(false)).bounds(272, this.height - 60, 110, 20).build();
-            this.addRenderableWidget(this.colsButton);
-        } else {
-            this.rowsButton.visible = true;
-            this.colsButton.visible = true;
+                    button -> this.onShapeButton(false)).build();
         }
+        this.rowsButton.setPosition(this.rowsX, this.height - 60);
+        this.rowsButton.setWidth(this.stepperWidth);
+        this.colsButton.setPosition(this.colsX, this.height - 60);
+        this.colsButton.setWidth(this.stepperWidth);
+        if (!this.steppersAttached) {
+            this.addRenderableWidget(this.rowsButton);
+            this.addRenderableWidget(this.colsButton);
+            this.steppersAttached = true;
+        }
+        this.rowsButton.visible = true;
+        this.colsButton.visible = true;
     }
 
     private void onSplitToggle() {
@@ -564,7 +606,7 @@ public class ImageCropScreen extends Screen {
 
     private void showConfirmError(String message) {
         this.lastInfo = "";
-        this.infoLine.setMessage(Component.literal("Fehler: " + (message != null ? message : "unbekannt"))
+        this.infoLine.setMessage(this.clippedText("Fehler: " + (message != null ? message : "unbekannt"))
                 .withStyle(ChatFormatting.RED));
     }
 

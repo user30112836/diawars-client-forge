@@ -93,6 +93,13 @@ public final class DiawarsClientForge {
                     }
             )
             .add(
+                    WhitelistRequestPayload.TYPE,
+                    WhitelistRequestPayload.CODEC,
+                    (payload, context) -> {
+                        // Client never receives whitelist requests; only sends them.
+                    }
+            )
+            .add(
                     HandshakePayload.TYPE,
                     HandshakePayload.CODEC,
                     (payload, context) -> {
@@ -269,6 +276,30 @@ public final class DiawarsClientForge {
             )
             .build();
 
+    /**
+     * Clientbound channel for the {@code diawars:whitelist_dialog} signal:
+     * the server sends it when the player clicks the "Erlaubte Mods"
+     * main-menu button or runs /mods, and the mod opens the whitelist dialog
+     * on the next client tick (see {@link WhitelistScreen}).
+     */
+    private static final Channel<CustomPacketPayload> WHITELIST_CHANNEL = ChannelBuilder
+            .named(Identifier.fromNamespaceAndPath(MOD_ID, "whitelist"))
+            .optional()
+            .networkProtocolVersion(1)
+            .payloadChannel()
+            .protocol(NetworkProtocol.PLAY)
+            .flow(PacketFlow.CLIENTBOUND)
+            .add(
+                    WhitelistDialogPayload.TYPE,
+                    WhitelistDialogPayload.CODEC,
+                    (payload, context) -> {
+                        if (ServerHandshake.isActive()) {
+                            pendingWhitelistDialogJson = payload.json();
+                        }
+                    }
+            )
+            .build();
+
     public DiawarsClientForge(FMLJavaModLoadingContext context) {
         LOGGER.info("Diawars Client (Forge) initialized.");
         // The handshake decides whether this server has the Diawars plugin —
@@ -311,6 +342,12 @@ public final class DiawarsClientForge {
             }
             return sendReportSubmit(json);
         });
+        WhitelistScreen.initRequestSender(json -> {
+            if (!canSendImages()) {
+                return false;
+            }
+            return sendWhitelistRequest(json);
+        });
         // Small bottom-right progress overlay while an image upload runs
         // (see ImageUploadOverlay); renders nothing once everything is sent.
         AddGuiOverlayLayersEvent.BUS.addListener(event -> event.getLayeredDraw().add(
@@ -344,6 +381,12 @@ public final class DiawarsClientForge {
      * and opened on the next client tick, see {@link ReportDialogScreen}.
      */
     public static volatile String pendingReportDialogJson;
+
+    /**
+     * JSON of the latest {@code diawars:whitelist_dialog} dialog request;
+     * parsed and opened on the next client tick, see {@link WhitelistScreen}.
+     */
+    public static volatile String pendingWhitelistDialogJson;
 
     /** Sends one prepared {@code diawars:image} chunk over the current connection. */
     public static void sendImage(String json) {
@@ -446,6 +489,21 @@ public final class DiawarsClientForge {
         }
     }
 
+    /** Sends one {@code diawars:whitelist_request} document over the current connection. */
+    public static boolean sendWhitelistRequest(String json) {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.getConnection() == null) {
+                return false;
+            }
+            CHANNEL.send(new WhitelistRequestPayload(json), minecraft.getConnection().getConnection());
+            return true;
+        } catch (Exception | LinkageError e) {
+            LOGGER.warn("Failed to send diawars whitelist request packet.", e);
+            return false;
+        }
+    }
+
     /** Whether image chunks can currently be sent (plugin confirmed + connected). */
     public static boolean canSendImages() {
         if (!ServerHandshake.isActive()) {
@@ -507,6 +565,14 @@ public final class DiawarsClientForge {
                 ReportDialogScreen reportDialogScreen = ReportDialogScreen.parseOrNull(pendingReportDialog);
                 if (reportDialogScreen != null && Minecraft.getInstance().player != null) {
                     Minecraft.getInstance().setScreenAndShow(reportDialogScreen);
+                }
+            }
+            String pendingWhitelistDialog = pendingWhitelistDialogJson;
+            if (pendingWhitelistDialog != null) {
+                pendingWhitelistDialogJson = null;
+                WhitelistScreen whitelistScreen = WhitelistScreen.parseOrNull(pendingWhitelistDialog);
+                if (whitelistScreen != null && Minecraft.getInstance().player != null) {
+                    Minecraft.getInstance().setScreenAndShow(whitelistScreen);
                 }
             }
             String pendingScreenshot = pendingScreenshotJson;

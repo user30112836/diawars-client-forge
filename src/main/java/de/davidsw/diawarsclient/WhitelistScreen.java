@@ -34,13 +34,15 @@ import java.util.Set;
  * <p>The dialog JSON ({@code {"mods": [...], "installed": [...],
  * "requestMax": 40}}) comes from the {@code diawars:whitelist_dialog}
  * payload. {@code installed} lists the display names of the allowed mods the
- * player already has loaded; those rows are drawn yellow. Requests are
- * optional: the Send button only submits when the field has content.</p>
+ * player already has loaded; those rows are drawn yellow and can be hidden
+ * with the toggle button. Requests are optional: the Send button only submits
+ * when the field has content.</p>
  */
 public class WhitelistScreen extends Screen {
     private static final Gson GSON = new Gson();
     private static final int LIST_ITEM_HEIGHT = 20;
     private static final int FIELD_HEIGHT = 20;
+    private static final int TOGGLE_WIDTH = 170;
 
     /** Sends the request JSON on the whitelist_request channel; false = dropped. */
     public interface RequestSender {
@@ -59,8 +61,10 @@ public class WhitelistScreen extends Screen {
     private final int requestMax;
 
     private ModList modList;
+    private StringWidget headerLabel;
     private EditBox requestBox;
     private Button requestButton;
+    private boolean hideInstalled;
 
     /**
      * Parses the {@code diawars:whitelist_dialog} JSON document and builds the
@@ -117,18 +121,13 @@ public class WhitelistScreen extends Screen {
         String savedRequest = this.requestBox != null ? this.requestBox.getValue() : "";
         this.clearWidgets();
 
-        this.addRenderableWidget(new StringWidget(margin, 28, this.width - margin * 2, 10,
-                Component.literal("Diese Mods dürfen Spieler installieren (" + this.mods.size() + "):"),
-                this.font));
+        this.headerLabel = new StringWidget(margin, 28, this.width - margin * 2, 10,
+                Component.literal(""), this.font);
+        this.addRenderableWidget(this.headerLabel);
 
         int listTop = 40;
         int listBottom = this.height - 96;
         this.modList = new ModList(this.minecraft, this.width, listBottom - listTop, listTop);
-        List<ModList.Entry> entries = new ArrayList<>();
-        for (String mod : this.mods) {
-            entries.add(new ModList.Entry(this.font, mod, this.installed.contains(mod.toLowerCase(Locale.ROOT))));
-        }
-        this.modList.replaceEntries(entries);
         this.addRenderableWidget(this.modList);
 
         int y = this.height - 92;
@@ -142,6 +141,15 @@ public class WhitelistScreen extends Screen {
         this.requestBox.setResponder(value -> this.updateRequestButton());
         this.addRenderableWidget(this.requestBox);
 
+        this.addRenderableWidget(Button.builder(Component.literal(this.toggleLabel()),
+                        button -> {
+                            this.hideInstalled = !this.hideInstalled;
+                            button.setMessage(Component.literal(this.toggleLabel()));
+                            this.refreshList();
+                        })
+                .bounds((this.width - TOGGLE_WIDTH) / 2, this.height - 56, TOGGLE_WIDTH, 20)
+                .build());
+
         int buttonWidth = 110;
         int gap = 8;
         int buttonX = (this.width - buttonWidth * 2 - gap) / 2;
@@ -152,8 +160,33 @@ public class WhitelistScreen extends Screen {
         this.addRenderableWidget(Button.builder(Component.literal("Schließen"),
                 button -> this.onClose()).bounds(buttonX + buttonWidth + gap, buttonY, buttonWidth, 20).build());
 
+        this.refreshList();
         this.updateRequestButton();
         this.setInitialFocus(this.requestBox);
+    }
+
+    /** Applies the installed filter to the list and refreshes the header count. */
+    private void refreshList() {
+        List<ModList.Entry> entries = new ArrayList<>();
+        for (String mod : this.mods) {
+            boolean installed = this.installed.contains(mod.toLowerCase(Locale.ROOT));
+            if (this.hideInstalled && installed) {
+                continue;
+            }
+            entries.add(new ModList.Entry(this.font, mod, installed));
+        }
+        this.modList.replaceEntries(entries);
+        if (this.headerLabel != null) {
+            String count = this.hideInstalled
+                    ? entries.size() + " von " + this.mods.size()
+                    : String.valueOf(this.mods.size());
+            this.headerLabel.setMessage(Component.literal(
+                    "Installierbare Mods (" + count + "):"));
+        }
+    }
+
+    private String toggleLabel() {
+        return this.hideInstalled ? "Installierte anzeigen" : "Installierte ausblenden";
     }
 
     private void updateRequestButton() {

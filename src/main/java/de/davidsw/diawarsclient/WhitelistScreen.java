@@ -126,7 +126,7 @@ public class WhitelistScreen extends Screen {
         this.addRenderableWidget(this.headerLabel);
 
         int listTop = 40;
-        int listBottom = this.height - 96;
+        int listBottom = this.height - 120;
         this.modList = new ModList(this.minecraft, this.width, listBottom - listTop, listTop);
         this.addRenderableWidget(this.modList);
 
@@ -147,7 +147,7 @@ public class WhitelistScreen extends Screen {
                             button.setMessage(Component.literal(this.toggleLabel()));
                             this.refreshList();
                         })
-                .bounds((this.width - TOGGLE_WIDTH) / 2, this.height - 56, TOGGLE_WIDTH, 20)
+                .bounds((this.width - TOGGLE_WIDTH) / 2, this.height - 116, TOGGLE_WIDTH, 20)
                 .build());
 
         int buttonWidth = 110;

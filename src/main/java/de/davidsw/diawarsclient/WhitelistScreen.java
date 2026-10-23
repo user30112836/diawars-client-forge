@@ -107,11 +107,16 @@ public class WhitelistScreen extends Screen {
         int listTop = 40;
         int listBottom = this.height - 96;
         this.modList = new ModList(this.minecraft, this.width, listBottom - listTop, listTop);
+        List<ModList.Entry> entries = new ArrayList<>();
+        for (String mod : this.mods) {
+            entries.add(new ModList.Entry(this.font, mod));
+        }
+        this.modList.replaceEntries(entries);
         this.addRenderableWidget(this.modList);
 
         int y = this.height - 92;
         this.addRenderableWidget(new StringWidget(margin, y, this.width - margin * 2, 10,
-                Component.literal("Neue Mod anfragen (optional, nur der Name):"), this.font));
+                Component.literal("Neue Mod anfragen (nur der Name):"), this.font));
         this.requestBox = new EditBox(this.font, margin, y + 12, this.width - margin * 2, FIELD_HEIGHT,
                 Component.literal(""));
         this.requestBox.setMaxLength(this.requestMax);
@@ -127,7 +132,7 @@ public class WhitelistScreen extends Screen {
         this.requestButton = Button.builder(Component.literal("Anfrage senden"),
                 button -> this.onSubmit()).bounds(buttonX, buttonY, buttonWidth, 20).build();
         this.addRenderableWidget(this.requestButton);
-        this.addRenderableWidget(Button.builder(Component.literal("Abbrechen"),
+        this.addRenderableWidget(Button.builder(Component.literal("Schließen"),
                 button -> this.onClose()).bounds(buttonX + buttonWidth + gap, buttonY, buttonWidth, 20).build());
 
         this.updateRequestButton();

@@ -175,6 +175,9 @@ public class WhitelistScreen extends Screen {
             entries.add(new ModList.Entry(this.font, mod, installed));
         }
         this.modList.replaceEntries(entries);
+        // Toggling/resizing changes the row count: jump back to the top so the
+        // old scroll offset cannot leave the shorter list looking empty.
+        this.modList.setScrollAmount(0.0);
         if (this.headerLabel != null) {
             String count = this.hideInstalled
                     ? entries.size() + " von " + this.mods.size()

@@ -125,15 +125,14 @@ public class WhitelistScreen extends Screen {
                 Component.literal(""), this.font);
         this.addRenderableWidget(this.headerLabel);
 
-        int listTop = 40;
-        int listBottom = this.height - 120;
+        int listTop = 44;
+        int listBottom = this.height - 108;
         this.modList = new ModList(this.minecraft, this.width, listBottom - listTop, listTop);
         this.addRenderableWidget(this.modList);
 
-        int y = this.height - 92;
-        this.addRenderableWidget(new StringWidget(margin, y, this.width - margin * 2, 10,
+        this.addRenderableWidget(new StringWidget(margin, this.height - 76, this.width - margin * 2, 10,
                 Component.literal("Neue Mod anfragen (nur der Name):"), this.font));
-        this.requestBox = new EditBox(this.font, margin, y + 12, this.width - margin * 2, FIELD_HEIGHT,
+        this.requestBox = new EditBox(this.font, margin, this.height - 60, this.width - margin * 2, FIELD_HEIGHT,
                 Component.literal(""));
         this.requestBox.setMaxLength(this.requestMax);
         this.requestBox.setHint(Component.literal("Anzeigename der Mod"));
@@ -147,7 +146,7 @@ public class WhitelistScreen extends Screen {
                             button.setMessage(Component.literal(this.toggleLabel()));
                             this.refreshList();
                         })
-                .bounds((this.width - TOGGLE_WIDTH) / 2, this.height - 116, TOGGLE_WIDTH, 20)
+                .bounds((this.width - TOGGLE_WIDTH) / 2, this.height - 102, TOGGLE_WIDTH, 20)
                 .build());
 
         int buttonWidth = 110;

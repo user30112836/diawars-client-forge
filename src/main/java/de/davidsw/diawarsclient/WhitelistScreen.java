@@ -17,7 +17,10 @@ import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Forge port of the Fabric {@code WhitelistScreen}: the server-requested mod
@@ -28,9 +31,11 @@ import java.util.List;
  * go to {@code diawars:whitelist_request} (see {@link WhitelistRequestPayload})
  * and are answered in chat by the server. Enter submits, Esc closes.
  *
- * <p>The dialog JSON ({@code {"mods": [...], "requestMax": 40}}) comes from
- * the {@code diawars:whitelist_dialog} payload. Requests are optional: the
- * Send button only submits when the field has content.</p>
+ * <p>The dialog JSON ({@code {"mods": [...], "installed": [...],
+ * "requestMax": 40}}) comes from the {@code diawars:whitelist_dialog}
+ * payload. {@code installed} lists the display names of the allowed mods the
+ * player already has loaded; those rows are drawn yellow. Requests are
+ * optional: the Send button only submits when the field has content.</p>
  */
 public class WhitelistScreen extends Screen {
     private static final Gson GSON = new Gson();
@@ -49,6 +54,8 @@ public class WhitelistScreen extends Screen {
     }
 
     private final List<String> mods;
+    /** Lowercased display names the player already has loaded (yellow rows). */
+    private final Set<String> installed;
     private final int requestMax;
 
     private ModList modList;
@@ -80,16 +87,26 @@ public class WhitelistScreen extends Screen {
             }
             int requestMax = doc.has("requestMax") && doc.get("requestMax").getAsJsonPrimitive().isNumber()
                     ? doc.get("requestMax").getAsInt() : 40;
-            return new WhitelistScreen(mods, requestMax);
+            Set<String> installed = new HashSet<>();
+            JsonArray installedArray = doc.getAsJsonArray("installed");
+            if (installedArray != null) {
+                for (var element : installedArray) {
+                    if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+                        installed.add(element.getAsString().toLowerCase(Locale.ROOT));
+                    }
+                }
+            }
+            return new WhitelistScreen(mods, installed, requestMax);
         } catch (Exception e) {
             LogUtils.getLogger().warn("Failed to parse whitelist dialog.", e);
             return null;
         }
     }
 
-    private WhitelistScreen(List<String> mods, int requestMax) {
+    private WhitelistScreen(List<String> mods, Set<String> installed, int requestMax) {
         super(Component.literal("Erlaubte Mods"));
         this.mods = mods;
+        this.installed = installed;
         this.requestMax = Math.max(1, requestMax);
     }
 
@@ -109,7 +126,7 @@ public class WhitelistScreen extends Screen {
         this.modList = new ModList(this.minecraft, this.width, listBottom - listTop, listTop);
         List<ModList.Entry> entries = new ArrayList<>();
         for (String mod : this.mods) {
-            entries.add(new ModList.Entry(this.font, mod));
+            entries.add(new ModList.Entry(this.font, mod, this.installed.contains(mod.toLowerCase(Locale.ROOT))));
         }
         this.modList.replaceEntries(entries);
         this.addRenderableWidget(this.modList);
@@ -196,10 +213,12 @@ public class WhitelistScreen extends Screen {
         static final class Entry extends ObjectSelectionList.Entry<ModList.Entry> {
             private final Font font;
             private final String modName;
+            private final boolean installed;
 
-            Entry(Font font, String modName) {
+            Entry(Font font, String modName, boolean installed) {
                 this.font = font;
                 this.modName = modName;
+                this.installed = installed;
             }
 
             @Override
@@ -212,7 +231,8 @@ public class WhitelistScreen extends Screen {
                 // NOTE: use the entry's own content coords like vanilla does;
                 // the x/y parameters are not the row position.
                 extractor.text(this.font, Component.literal(shortenToFit(this.modName)),
-                        this.getContentX() + 2, this.getContentY() + 6, 0xFFFFFFFF);
+                        this.getContentX() + 2, this.getContentY() + 6,
+                        this.installed ? 0xFFFFFF55 : 0xFFFFFFFF);
             }
 
             /** Cuts the mod name with "..." so it stays inside the list. */

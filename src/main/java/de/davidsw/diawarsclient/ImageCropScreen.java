@@ -135,7 +135,7 @@ public class ImageCropScreen extends Screen {
                 button -> this.fitWholeImage())
                 .bounds(buttonX + (smallWidth + gap) * 2, buttonY, buttonWidth, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("Zurück"),
-                button -> this.minecraft.setScreenAndShow(new ImageUploadScreen()))
+                button -> this.minecraft.gui.setScreen(new ImageUploadScreen()))
                 .bounds(buttonX + (smallWidth + gap) * 2 + buttonWidth + gap, buttonY, bottom[3], 20).build());
         this.confirmButton = Button.builder(Component.literal("Hochladen"),
                 button -> this.onConfirm())

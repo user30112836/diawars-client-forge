@@ -547,7 +547,7 @@ public final class DiawarsClientForge {
                 pendingOpenUploadScreen = false;
                 Minecraft minecraft = Minecraft.getInstance();
                 if (minecraft.player != null) {
-                    minecraft.setScreenAndShow(new ImageUploadScreen());
+                    minecraft.gui.setScreen(new ImageUploadScreen());
                 }
             }
             String pendingTextInput = pendingTextInputJson;
@@ -555,7 +555,7 @@ public final class DiawarsClientForge {
                 pendingTextInputJson = null;
                 TextInputScreen textInputScreen = TextInputScreen.parseOrNull(pendingTextInput);
                 if (textInputScreen != null && Minecraft.getInstance().player != null) {
-                    Minecraft.getInstance().setScreenAndShow(textInputScreen);
+                    Minecraft.getInstance().gui.setScreen(textInputScreen);
                 }
             }
             String pendingReportDialog = pendingReportDialogJson;
@@ -563,7 +563,7 @@ public final class DiawarsClientForge {
                 pendingReportDialogJson = null;
                 ReportDialogScreen reportDialogScreen = ReportDialogScreen.parseOrNull(pendingReportDialog);
                 if (reportDialogScreen != null && Minecraft.getInstance().player != null) {
-                    Minecraft.getInstance().setScreenAndShow(reportDialogScreen);
+                    Minecraft.getInstance().gui.setScreen(reportDialogScreen);
                 }
             }
             String pendingWhitelistDialog = pendingWhitelistDialogJson;
@@ -571,7 +571,7 @@ public final class DiawarsClientForge {
                 pendingWhitelistDialogJson = null;
                 WhitelistScreen whitelistScreen = WhitelistScreen.parseOrNull(pendingWhitelistDialog);
                 if (whitelistScreen != null && Minecraft.getInstance().player != null) {
-                    Minecraft.getInstance().setScreenAndShow(whitelistScreen);
+                    Minecraft.getInstance().gui.setScreen(whitelistScreen);
                 }
             }
             String pendingScreenshot = pendingScreenshotJson;

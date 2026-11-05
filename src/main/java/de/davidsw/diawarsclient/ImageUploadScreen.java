@@ -254,7 +254,7 @@ public class ImageUploadScreen extends Screen {
             return;
         }
 
-        this.minecraft.setScreenAndShow(new ImageCropScreen(source, effectiveName));
+        this.minecraft.gui.setScreen(new ImageCropScreen(source, effectiveName));
     }
 
     private void setStatus(String text, ChatFormatting color) {
